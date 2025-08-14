@@ -12,7 +12,7 @@ if not TELEGRAM_BOT_TOKEN:
 
 BOT_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # اختياري
 
 # =====================
 # App & Logging
@@ -68,9 +68,11 @@ def getwebhook_route():
 
 @app.post("/webhook/<token>")
 def webhook(token):
+    # تحقق من التوكن في عنوان المسار
     if token != TELEGRAM_BOT_TOKEN:
         return "forbidden", 403
 
+    # تحقق من السر (اختياري)
     if WEBHOOK_SECRET:
         incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if incoming != WEBHOOK_SECRET:
@@ -84,18 +86,25 @@ def webhook(token):
         text = (message.get("text") or "").strip()
         msg_id = message.get("message_id")
 
+        # ---------------------
+        # منطق الردود (intents)
+        # ---------------------
+        intents = {
+            "سلام": "وعليكم السلام ورحمة الله ✨",
+            "مرحبا": "أهلًا وسهلًا! كيف أقدر أساعدك؟",
+            "تواصل": "تمام، تم تسجيل طلب تواصل ✅",
+            "نوم": "جرّب تنام 7-8 ساعات، ونظم وقت النوم 😴"
+        }
+
         if text.startswith("/start"):
-            reply = ("👋 أهلاً بك! أنا <b>عربي سايكو</b> على تيليجرام.\n"
-                     "• /help — التعليمات\n"
-                     "• اكتب أي رسالة وسأرد عليك الآن (نموذج تجريبي).")
+            reply = ("👋 أهلاً بك! أنا <b>عربي سايكو</b>.\n"
+                     "جرّب تكتب: نوم، تواصل، سلام… أو /help")
         elif text.startswith("/help"):
-            reply = ("🔧 تعليمات سريعة:\n"
-                     "- أرسل رسالة نصية وسأرد عليك.\n"
-                     "- هذا نموذج أولي سنطوّره لاحقًا.")
-        elif text:
-            reply = f"تمام 👌 وصلتني:\n“{text}”"
+            reply = "أرسل كلمة مثل: نوم، تواصل، سلام — وسأرد عليك."
         else:
-            reply = "أرسل نصًا من فضلك."
+            # أول رسالة تطابق كلمة مفتاحية، وإلا رجع تأكيد الاستلام
+            reply = next((v for k, v in intents.items() if k in text), None) or \
+                    f"تمام 👌 وصلتني: “{text}”"
 
         if chat_id and reply:
             tg("sendMessage", {
@@ -107,7 +116,7 @@ def webhook(token):
     except Exception as e:
         log.exception("webhook error: %s", e)
 
-    # ارجع رد دائمًا حتى لا ترمي Flask خطأ
+    # مهم: نرجّع رد دائمًا حتى لا ترمي Flask خطأ
     return "ok", 200
 
 if __name__ == "__main__":
