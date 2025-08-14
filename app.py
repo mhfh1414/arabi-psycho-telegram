@@ -4,15 +4,15 @@ from flask import Flask, request, jsonify
 import requests
 
 # =====================
-# Config (بيئة التشغيل)
+# Config
 # =====================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  # مطلوب
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
 
 BOT_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")  # يضبطه Render تلقائيًا
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # اختياري لكنه مستحسن
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
 
 # =====================
 # App & Logging
@@ -24,23 +24,15 @@ log = logging.getLogger("arabi-psycho-bot")
 # =====================
 # Telegram helpers
 # =====================
-def tg(method: str, payload: dict):
-    url = f"{BOT_API}/{method}"
-    r = requests.post(url, json=payload, timeout=15)
+def tg(method, payload):
+    r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=15)
     try:
         return r.json()
     except Exception:
         return {"status_code": r.status_code, "text": r.text}
 
-def send_message(chat_id: int, text: str, reply_to_message_id: int | None = None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_to_message_id:
-        payload["reply_to_message_id"] = reply_to_message_id
-    return tg("sendMessage", payload)
-
 def set_webhook():
     if not RENDER_URL:
-        log.warning("No PUBLIC URL (RENDER_EXTERNAL_URL) yet. Skipping setWebhook.")
         return {"ok": False, "reason": "No public URL"}
     url = f"{RENDER_URL.rstrip('/')}/webhook/{TELEGRAM_BOT_TOKEN}"
     payload = {"url": url}
@@ -58,8 +50,8 @@ def index():
     return jsonify({
         "app": "Arabi Psycho Telegram Bot",
         "status": "ok",
-        "webhook": f"/webhook/{TELEGRAM_BOT_TOKEN[-8:]}... (masked)",
         "public_url": RENDER_URL,
+        "webhook": f"/webhook/{TELEGRAM_BOT_TOKEN[-8:]}...(masked)",
     })
 
 @app.get("/health")
@@ -68,16 +60,56 @@ def health():
 
 @app.get("/setwebhook")
 def setwebhook_route():
-    res = set_webhook()
-    return jsonify(res)
+    return jsonify(set_webhook())
 
 @app.get("/getwebhook")
 def getwebhook_route():
-    return tg("getWebhookInfo", {})
+    return jsonify(tg("getWebhookInfo", {}))
 
 @app.post("/webhook/<token>")
 def webhook(token):
     if token != TELEGRAM_BOT_TOKEN:
         return "forbidden", 403
 
-    # Optional: تحقق من الهيدر الس
+    if WEBHOOK_SECRET:
+        incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if incoming != WEBHOOK_SECRET:
+            return "forbidden", 403
+
+    try:
+        update = request.get_json(silent=True) or {}
+        message = update.get("message") or update.get("edited_message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        text = (message.get("text") or "").strip()
+        msg_id = message.get("message_id")
+
+        if text.startswith("/start"):
+            reply = ("👋 أهلاً بك! أنا <b>عربي سايكو</b> على تيليجرام.\n"
+                     "• /help — التعليمات\n"
+                     "• اكتب أي رسالة وسأرد عليك الآن (نموذج تجريبي).")
+        elif text.startswith("/help"):
+            reply = ("🔧 تعليمات سريعة:\n"
+                     "- أرسل رسالة نصية وسأرد عليك.\n"
+                     "- هذا نموذج أولي سنطوّره لاحقًا.")
+        elif text:
+            reply = f"تمام 👌 وصلتني:\n“{text}”"
+        else:
+            reply = "أرسل نصًا من فضلك."
+
+        if chat_id and reply:
+            tg("sendMessage", {
+                "chat_id": chat_id,
+                "text": reply,
+                "parse_mode": "HTML",
+                "reply_to_message_id": msg_id
+            })
+    except Exception as e:
+        log.exception("webhook error: %s", e)
+
+    # ارجع رد دائمًا حتى لا ترمي Flask خطأ
+    return "ok", 200
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
