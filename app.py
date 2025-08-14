@@ -25,7 +25,7 @@ log = logging.getLogger("arabi-psycho-bot")
 SESSIONS = {}  # { chat_id: {stage: "...", ...} }
 
 # =====================
-# Telegram helpers
+# Helpers
 # =====================
 def tg(method, payload):
     r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=15)
@@ -44,6 +44,25 @@ def set_webhook():
     res = tg("setWebhook", payload)
     log.info("setWebhook -> %s", res)
     return res
+
+def kb_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "ابدأ جلسة CBT 🧠", "callback_data": "start_cbt"}],
+            [{"text": "تعليمات ℹ️", "callback_data": "help"}],
+            [{"text": "إنهاء الجلسة ✖️", "callback_data": "cancel"}],
+        ]
+    }
+
+def send(chat_id, text, reply_to=None, markup=None, parse_html=True):
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    if parse_html:
+        payload["parse_mode"] = "HTML"
+    if markup:
+        payload["reply_markup"] = markup
+    return tg("sendMessage", payload)
 
 # =====================
 # Routes
@@ -74,11 +93,11 @@ def getwebhook_route():
 # =====================
 @app.post("/webhook/<token>")
 def webhook(token):
-    # تحقّق من التوكن في عنوان المسار
+    # تحقق من التوكن في عنوان المسار
     if token != TELEGRAM_BOT_TOKEN:
         return "forbidden", 403
 
-    # تحقّق من السر (اختياري)
+    # تحقق من السر (اختياري)
     if WEBHOOK_SECRET:
         incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if incoming != WEBHOOK_SECRET:
@@ -86,14 +105,59 @@ def webhook(token):
 
     try:
         update = request.get_json(silent=True) or {}
+
+        # ========= Callback Query (أزرار) =========
+        cbq = update.get("callback_query")
+        if cbq:
+            chat_id = cbq["message"]["chat"]["id"]
+            msg_id = cbq["message"]["message_id"]
+            data = cbq.get("data")
+            tg("answerCallbackQuery", {"callback_query_id": cbq["id"]})
+
+            if data == "start_cbt":
+                SESSIONS[chat_id] = {"stage": "mood"}
+                send(chat_id,
+                     "نبدأ جلسة علاج سلوكي معرفي قصيرة 🧠\n"
+                     "١) قيّم مزاجك الآن من 0 إلى 10؟",
+                     reply_to=msg_id, parse_html=False)
+                return "ok", 200
+
+            if data == "help":
+                send(chat_id,
+                     "ℹ️ تعليمات سريعة:\n"
+                     "• /start — بدء الاستخدام\n"
+                     "• /cbt — جلسة علاج سلوكي معرفي قصيرة\n"
+                     "• /menu — إظهار القائمة\n"
+                     "• /cancel — إنهاء الجلسة الحالية\n"
+                     "• كلمات مفيدة: سلام، نوم، تواصل",
+                     reply_to=msg_id)
+                return "ok", 200
+
+            if data == "cancel":
+                SESSIONS.pop(chat_id, None)
+                send(chat_id, "تم إنهاء الجلسة الحالية. تقدر تبدأ من جديد بـ /cbt أو من القائمة.", reply_to=msg_id)
+                return "ok", 200
+
+            return "ok", 200
+
+        # ========= Message =========
         message = update.get("message") or update.get("edited_message") or {}
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
         text = (message.get("text") or "").strip()
         msg_id = message.get("message_id")
 
-        # لو ما فيه نص، اكتفِ بـ 200 عادي
         if not chat_id:
+            return "ok", 200
+
+        # ---------- أوامر سريعة ----------
+        if text == "/menu":
+            send(chat_id, "القائمة الرئيسية:", markup=kb_menu())
+            return "ok", 200
+
+        if text == "/cancel":
+            SESSIONS.pop(chat_id, None)
+            send(chat_id, "تم إنهاء الجلسة الحالية. اكتب /cbt للبدء من جديد.", reply_to=msg_id)
             return "ok", 200
 
         # ---------- CBT FLOW ----------
@@ -102,12 +166,10 @@ def webhook(token):
         # بدء جلسة CBT
         if text == "/cbt":
             SESSIONS[chat_id] = {"stage": "mood"}
-            tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": ("نبدأ جلسة علاج سلوكي معرفي قصيرة 🧠\n"
-                         "١) قيّم مزاجك الآن من 0 إلى 10؟"),
-                "reply_to_message_id": msg_id
-            })
+            send(chat_id,
+                 "نبدأ جلسة علاج سلوكي معرفي قصيرة 🧠\n"
+                 "١) قيّم مزاجك الآن من 0 إلى 10؟",
+                 reply_to=msg_id, parse_html=False)
             return "ok", 200
 
         # متابعة الجلسة إن كانت فعّالة
@@ -122,83 +184,51 @@ def webhook(token):
                         raise ValueError
                     sess["mood_before"] = mood
                     sess["stage"] = "situation"
-                    tg("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": "٢) صف الموقف الذي حصل باختصار:",
-                        "reply_to_message_id": msg_id
-                    })
+                    send(chat_id, "٢) صف الموقف الذي حصل باختصار:", reply_to=msg_id)
                 except Exception:
-                    tg("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": "أرسل رقمًا من 0 إلى 10 من فضلك.",
-                        "reply_to_message_id": msg_id
-                    })
+                    send(chat_id, "أرسل رقمًا من 0 إلى 10 من فضلك.", reply_to=msg_id)
                 return "ok", 200
 
             # ٢) الموقف
             if stage == "situation":
                 sess["situation"] = text
                 sess["stage"] = "thoughts"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٣) ما هي الأفكار التلقائية التي خطرت لك؟",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٣) ما هي الأفكار التلقائية التي خطرت لك؟", reply_to=msg_id)
                 return "ok", 200
 
             # ٣) الأفكار
             if stage == "thoughts":
                 sess["thoughts"] = text
                 sess["stage"] = "evidence_for"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٤) ما الدلائل التي تؤيد هذه الفكرة؟",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٤) ما الدلائل التي تؤيد هذه الفكرة؟", reply_to=msg_id)
                 return "ok", 200
 
             # ٤) أدلة مؤيدة
             if stage == "evidence_for":
                 sess["evidence_for"] = text
                 sess["stage"] = "evidence_against"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٥) وما الدلائل التي تعارضها؟",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٥) وما الدلائل التي تعارضها؟", reply_to=msg_id)
                 return "ok", 200
 
             # ٥) أدلة معارضة
             if stage == "evidence_against":
                 sess["evidence_against"] = text
                 sess["stage"] = "balanced"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٦) جرّب صياغة فكرة بديلة متوازنة:",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٦) جرّب صياغة فكرة بديلة متوازنة:", reply_to=msg_id)
                 return "ok", 200
 
             # ٦) الفكرة المتوازنة
             if stage == "balanced":
                 sess["balanced"] = text
                 sess["stage"] = "action"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٧) اختر خطوة عملية صغيرة ستقوم بها اليوم (Action):",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٧) اختر خطوة عملية صغيرة ستقوم بها اليوم (Action):", reply_to=msg_id)
                 return "ok", 200
 
             # ٧) الخطة
             if stage == "action":
                 sess["action"] = text
                 sess["stage"] = "wrapup"
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "٨) قيّم مزاجك الآن (0–10) بعد إعادة التقييم:",
-                    "reply_to_message_id": msg_id
-                })
+                send(chat_id, "٨) قيّم مزاجك الآن (0–10) بعد إعادة التقييم:", reply_to=msg_id)
                 return "ok", 200
 
             # ٨) الختام + الملخص
@@ -222,12 +252,9 @@ def webhook(token):
                     diff = mood_after - m_before
                     summary += f"• المزاج: {m_before} ➜ {mood_after} (التغيّر: {diff})\n"
 
-                tg("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": summary + "\n📌 تقدر تعيد الجلسة بكتابة /cbt متى ما شئت.",
-                    "parse_mode": "HTML"
-                })
+                send(chat_id, summary + "\n📌 تقدر تعيد الجلسة بكتابة /cbt متى ما شئت.")
                 SESSIONS.pop(chat_id, None)
+                send(chat_id, "القائمة الرئيسية:", markup=kb_menu())
                 return "ok", 200
         # -------- END CBT FLOW --------
 
@@ -240,23 +267,27 @@ def webhook(token):
         }
 
         if text.startswith("/start"):
-            reply = ("👋 أهلاً بك! أنا <b>عربي سايكو</b>.\n"
-                     "اكتب: <code>/cbt</code> لبدء جلسة علاج سلوكي معرفي.\n"
-                     "أو جرّب كلمات: نوم، تواصل، سلام… أو /help")
+            send(
+                chat_id,
+                ("👋 أهلاً بك! أنا <b>عربي سايكو</b>.\n"
+                 "اكتب: <code>/cbt</code> لبدء جلسة علاج سلوكي معرفي.\n"
+                 "جرّب أيضًا /help أو اضغط الأزرار بالأسفل."),
+                markup=kb_menu()
+            )
         elif text.startswith("/help"):
-            reply = "أرسل كلمة مثل: نوم، تواصل، سلام — أو اكتب /cbt لبدء جلسة قصيرة."
+            send(
+                chat_id,
+                ("ℹ️ تعليمات سريعة:\n"
+                 "• /start — بدء الاستخدام\n"
+                 "• /cbt — جلسة علاج سلوكي معرفي قصيرة\n"
+                 "• /menu — إظهار القائمة\n"
+                 "• /cancel — إنهاء الجلسة الحالية\n"
+                 "• كلمات مفيدة: سلام، نوم، تواصل")
+            )
         else:
             reply = next((v for k, v in intents.items() if k in text), None) or \
                     f"تمام 👌 وصلتني: “{text}”"
-
-        # إرسال الرد
-        if chat_id and reply:
-            tg("sendMessage", {
-                "chat_id": chat_id,
-                "text": reply,
-                "parse_mode": "HTML",
-                "reply_to_message_id": msg_id
-            })
+            send(chat_id, reply)
 
     except Exception as e:
         log.exception("webhook error: %s", e)
