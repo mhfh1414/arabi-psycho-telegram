@@ -19,7 +19,7 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")  # اختياري لزيادة الأمان
 
 # 👇 ضع رقم الشات الخاص بك (يمكن أن يكون سالبًا لو كانت مجموعة)
-ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID") or "123456789")  # ← استبدله برقمك
+ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID") or "0530565696")  # ← استبدله برقمك
 
 # يُعرض للمستخدم عند طلب "تواصل" (اختياري)
 ADMIN_CONTACT = os.environ.get("ADMIN_CONTACT") or "تم استلام طلبك وسنتواصل معك قريبًا."
