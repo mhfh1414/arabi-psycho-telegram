@@ -1,4 +1,5 @@
-# app.py — Arabi Psycho Telegram Bot (CBT + Quick Protocols + Tests + Contact)
+# app.py — Arabi Psycho Telegram Bot
+# (CBT + Quick Protocols + Tests + Contact + Inline "اختبارات" + /keys)
 
 import os
 import logging
@@ -71,15 +72,26 @@ def set_webhook():
 # Keyboards
 # =====================
 def kb_menu_inline():
+    # أضفنا زر "اختبارات 🧪"
     return {
         "inline_keyboard": [
             [{"text": "ابدأ جلسة CBT 🧠", "callback_data": "start_cbt"}],
+            [{"text": "اختبارات 🧪", "callback_data": "tests"}],
             [{"text": "تعليمات ℹ️", "callback_data": "help"}],
             [{"text": "إنهاء الجلسة ✖️", "callback_data": "cancel"}],
         ]
     }
 
+def kb_tests_inline():
+    return {
+        "inline_keyboard": [
+            [{"text": "GAD-7 القلق", "callback_data": "start_gad7"}],
+            [{"text": "PHQ-9 الاكتئاب", "callback_data": "start_phq9"}],
+        ]
+    }
+
 def kb_quick_reply():
+    # لوحة الأزرار السفلية (Reply Keyboard)
     return {
         "keyboard": [
             [{"text": "نوم"}, {"text": "حزن"}],
@@ -310,9 +322,21 @@ def webhook(token):
                 send(chat_id, "نبدأ CBT 🧠\n١) قيّم مزاجك الآن من 0 إلى 10؟", reply_to=msg_id, parse_html=False)
                 return "ok", 200
 
+            if data == "tests":
+                send(chat_id, "اختر اختبارًا:", markup=kb_tests_inline())
+                return "ok", 200
+
+            if data == "start_gad7":
+                start_test(chat_id, "gad7")
+                return "ok", 200
+
+            if data == "start_phq9":
+                start_test(chat_id, "phq9")
+                return "ok", 200
+
             if data == "help":
                 send(chat_id,
-                     "ℹ️ أوامر: /start /cbt /tests /gad7 /phq9 /menu /cancel\n"
+                     "ℹ️ أوامر: /start /cbt /tests /gad7 /phq9 /menu /keys /cancel\n"
                      "وأزرار: نوم/حزن/قلق/تنفس/تواصل.",
                      reply_to=msg_id)
                 return "ok", 200
@@ -368,6 +392,10 @@ def webhook(token):
             send(chat_id, "القائمة الرئيسية:", markup=kb_menu_inline())
             return "ok", 200
 
+        if is_cmd("keys") or is_cmd("showkeys"):
+            send(chat_id, "تم إظهار الأزرار السفلية.", markup=kb_quick_reply())
+            return "ok", 200
+
         if is_cmd("cancel"):
             SESSIONS.pop(chat_id, None)
             TEST_SESSIONS.pop(chat_id, None)
@@ -376,7 +404,7 @@ def webhook(token):
 
         # ---------- اختبارات ----------
         if is_cmd("tests") or is_cmd("اختبارات"):
-            send(chat_id, "اختر اختبارًا:\n- /gad7 (قلق)\n- /phq9 (اكتئاب)\n- /cancel لإلغاء")
+            send(chat_id, "اختر اختبارًا:", markup=kb_tests_inline())
             return "ok", 200
 
         if is_cmd("gad7"):
@@ -482,7 +510,8 @@ def webhook(token):
                 ("👋 أهلاً بك! أنا <b>عربي سايكو</b>.\n"
                  "اكتب: <code>/cbt</code> لبدء جلسة علاج سلوكي معرفي.\n"
                  "استخدم /tests للاختبارات (GAD-7, PHQ-9).\n"
-                 "جرّب الأزرار: نوم/حزن/قلق/تنفس/تواصل."),
+                 "جرّب الأزرار: نوم/حزن/قلق/تنفس/تواصل.\n"
+                 "لو اختفت الأزرار السفلية اكتب /keys."),
                 markup=kb_quick_reply()
             )
             send(chat_id, "القائمة الرئيسية:", markup=kb_menu_inline())
@@ -492,11 +521,12 @@ def webhook(token):
             send(
                 chat_id,
                 ("ℹ️ تعليمات سريعة:\n"
-                 "• /start — بدء الاستخدام\n"
                  "• /cbt — جلسة علاج سلوكي معرفي\n"
                  "• /tests — قائمة الاختبارات (gad7/phq9)\n"
-                 "• /menu — إظهار القائمة\n"
-                 "• /cancel — إنهاء الجلسة الحالية")
+                 "• /menu — القائمة العلوية\n"
+                 "• /keys — إظهار الأزرار السفلية\n"
+                 "• /cancel — إنهاء الجلسة الحالية"),
+                markup=kb_quick_reply()
             )
             return "ok", 200
 
@@ -504,7 +534,7 @@ def webhook(token):
         low = text.replace("أ", "ا").strip()
 
         if low in ["اختبارات", "tests"]:
-            send(chat_id, "اختر اختبارًا:\n- /gad7 (قلق)\n- /phq9 (اكتئاب)\n- /cancel لإلغاء")
+            send(chat_id, "اختر اختبارًا:", markup=kb_tests_inline())
             return "ok", 200
 
         if low in ["نوم", "نوم."]:
