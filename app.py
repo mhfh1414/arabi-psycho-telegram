@@ -1,287 +1,295 @@
-# app.py — Arabi Psycho Telegram Bot
-import os, logging, requests
+# app.py
+import os, logging, json
 from flask import Flask, request, jsonify
+import requests
 
-# ========= Config =========
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
+# ======================
+# إعدادات
+# ======================
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
 
+BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "secret")
-PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # اختياري
-
-BOT_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # اختياري: رقم شاتك للإشعارات
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # اختياري
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arabi-psycho-bot")
 
-# ========= Telegram helpers =========
-def tg(method: str, payload: dict):
-    r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=15)
-    try:
-        return r.json()
-    except Exception:
-        return {"ok": False, "text": r.text}
+# ======================
+# مساعدات تيليجرام
+# ======================
+def tg(method, payload):
+    url = f"{BOT_API}/{method}"
+    r = requests.post(url, json=payload, timeout=15)
+    if r.status_code != 200:
+        log.warning("TG error %s: %s", r.status_code, r.text[:200])
+    return r
 
-def send(chat_id, text, kb=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if kb:
-        payload["reply_markup"] = kb
-    return tg("sendMessage", payload)
+def send(chat_id, text, reply_markup=None, parse_mode="HTML"):
+    return tg("sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+        **({"reply_markup": reply_markup} if reply_markup else {})
+    })
 
-def edit_msg(chat_id, msg_id, text, kb=None):
-    payload = {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    if kb:
-        payload["reply_markup"] = kb
-    return tg("editMessageText", payload)
-
-def answer_cbq(cbq_id, text=""):
-    return tg("answerCallbackQuery", {"callback_query_id": cbq_id, "text": text})
-
-def kb_inline(rows):
-    return {"inline_keyboard": rows}
-
-def kb_reply():  # قائمة سفلية دائمة
+def reply_kb():
+    # لوحة أزرار سفلية دائمة
     return {
         "keyboard": [
             [{"text": "نوم"}, {"text": "حزن"}],
-            [{"text": "تنفس"}, {"text": "تواصل"}],
-            [{"text": "مساعدة"}],
+            [{"text": "تنفّس"}, {"text": "تواصل"}],
+            [{"text": "مساعدة"}, {"text": "اختبارات"}],
         ],
         "resize_keyboard": True,
+        "one_time_keyboard": False,
         "is_persistent": True
     }
 
-# ========= Main menu (inline) =========
-def main_menu_kb():
-    return kb_inline([
-        [{"text": "🩺 جلسات علاجية: نوم • حزن • اكتئاب", "callback_data": "th:menu"}],
-        [{"text": "🧠 العلاج السلوكي المعرفي (CBT)", "callback_data": "tx:menu"}],
-        [{"text": "ℹ️ مساعدة", "callback_data": "menu:help"}],
-    ])
+def inline_rows(rows):
+    return {"inline_keyboard": rows}
 
-def show_both_menus(chat_id):
-    send(chat_id, "أنا <b>عربي سايكو</b> 🤝\nاختر من القائمة أو استخدم الأزرار السفلية.", kb=main_menu_kb())
-    send(chat_id, "لوحة الأزرار السفلية:", kb_reply())
+def is_cmd(text, name):
+    return text.strip().startswith("/" + name)
 
-# ========= CBT =========
-CBT_ITEMS = [
-    ("أخطاء التفكير", "tx:te"),
-    ("الاجترار والكبت", "tx:rum"),
-    ("الأسئلة العشرة لتحدي الأفكار", "tx:10q"),
-    ("الاسترخاء", "tx:relax"),
-    ("التنشيط السلوكي", "tx:ba"),
-    ("اليقظة الذهنية", "tx:mind"),
-    ("حل المشكلات", "tx:ps"),
-    ("سلوكيات الأمان", "tx:safety"),
+# ======================
+# بيانات الاختبارات (GAD-7، PHQ-9)
+# ======================
+ANS = [("أبدًا", 0), ("عدة أيام", 1), ("أكثر من النصف", 2), ("تقريبًا يوميًا", 3)]
+
+G7 = [
+    "التوتر/العصبية أو الشعور بالقلق",
+    "عدم القدرة على التوقف عن القلق أو السيطرة عليه",
+    "الانشغال بالهموم بدرجة كبيرة",
+    "صعوبة الاسترخاء",
+    "تململ/صعوبة الجلوس بهدوء",
+    "الانزعاج بسرعة أو العصبية",
+    "الخوف من حدوث شيء سيئ"
 ]
-CBT_TITLES = {
-    "tx:te": "أخطاء التفكير",
-    "tx:rum": "الاجترار والكبت",
-    "tx:10q": "الأسئلة العشرة لتحدي الأفكار",
-    "tx:relax": "تقنيات الاسترخاء",
-    "tx:ba": "التنشيط السلوكي",
-    "tx:mind": "اليقظة الذهنية",
-    "tx:ps": "حل المشكلات",
-    "tx:safety": "سلوكيات الأمان",
-}
-CBT_CONTENT = {
-    "tx:te": "أشهر أخطاء التفكير:\n• التعميم • قراءة الأفكار • التنبؤ السلبي • التهويل/التقليل\nاستبدلها بصياغة متوازنة مبنية على أدلة.",
-    "tx:rum": "الاجترار تدوير الفكرة بلا فعل، والكبت يزيدها. لاحظها ودعها تمرّ، وانقل انتباهك لنشاط مفيد.",
-    "tx:10q": "أسئلة لتحدي الفكرة: الدليل معها/ضدها؟ هل أعمم؟ أسوأ/أفضل/الأغلب؟ ماذا أقول لصديق مكاني؟ ما السلوك المفيد الآن؟",
-    "tx:relax": "تنفّس 4-4-6 ×10: شهيق4/حبس4/زفير6. مع إرخاء عضلي تدريجي.",
-    "tx:ba": "أضف نشاطات ممتعة/نافعة صغيرة يوميًا وقيّم مزاجك قبل/بعد.",
-    "tx:mind": "يقظة ذهنية 3×3×3: 3 أشياء تراها/تسمعها/تلمسها بلا حكم.",
-    "tx:ps": "حل المشكلات: عرّف المشكلة → خيارات → خطة SMART → جرّب وقيّم.",
-    "tx:safety": "سلوكيات الأمان (تجنّب/طمأنة) تُبقي القلق. قلّلها تدريجيًا مع تعرّض آمن.",
-}
-def cbt_menu_kb():
-    rows = []
-    for i in range(0, len(CBT_ITEMS), 2):
-        chunk = CBT_ITEMS[i:i+2]
-        rows.append([{"text": t, "callback_data": k} for (t, k) in chunk])
-    rows.append([{"text": "⬅️ رجوع", "callback_data": "home"}])
-    return kb_inline(rows)
-
-# ========= Therapy: Sleep / Sadness / Depression =========
-THERAPY_ITEMS = [
-    ("😴 علاج النوم", "th:sleep"),
-    ("😔 علاج الحزن", "th:sad"),
-    ("🕯️ علاج الاكتئاب", "th:dep"),
+PHQ9 = [
+    "قلة الاهتمام أو المتعة بالقيام بالأشياء",
+    "الشعور بالحزن أو الاكتئاب أو اليأس",
+    "مشاكل في النوم أو النوم كثيرًا",
+    "الإرهاق أو قلة الطاقة",
+    "ضعف الشهية أو الإفراط في الأكل",
+    "الشعور بتدني تقدير الذات أو الذنب",
+    "صعوبة التركيز",
+    "الحركة أو الكلام ببطء شديد أو العكس (توتر زائد)",
+    "أفكار بأنك ستكون أفضل حالًا لو لم تكن موجودًا"
 ]
-THERAPY_CONTENT = {
-    "th:sleep":
-        "<b>بروتوكول النوم (مختصر):</b>\n"
-        "• ثبّت ميعاد الاستيقاظ يوميًا.\n"
-        "• اقطع الكافيين بعد 2 ظهرًا وقلّل الشاشات ليلًا.\n"
-        "• طقوس تهدئة 30–45د: ضوء خافت، قراءة خفيفة.\n"
-        "• سرير = نوم فقط (منبّه/جوال خارج الغرفة).\n"
-        "• لو ما نمت خلال 20د، انهض لنشاط هادئ وارجع عند النعاس.\n"
-        "• طبّق تنفّس 4-4-6 وإرخاء عضلي تدريجي.",
-    "th:sad":
-        "<b>علاج الحزن بالتنشيط السلوكي:</b>\n"
-        "• دوّن 3 أنشطة صغيرة (ممتع/نافع/قريب من الناس).\n"
-        "• ابدأ بأسهل نشاط لمدة 10–20د اليوم.\n"
-        "• قيّم مزاجك قبل/بعد 0–10 ولاحظ الفرق.\n"
-        "• كرر يوميًا وزوّد الوقت تدريجيًا.\n"
-        "• اطلب دعم بسيط: مكالمة/مشي مع صديق.",
-    "th:dep":
-        "<b>خطة مبسطة للاكتئاب:</b>\n"
-        "1) روتين يومي ثابت (نوم/أكل/خروج للشمس).\n"
-        "2) تنشيط سلوكي (مهام صغيرة قابلة للإنجاز).\n"
-        "3) تحدي الأفكار السوداوية بأسئلة واقعية (راجع قسم CBT).\n"
-        "4) حركة خفيفة 15–20د (مشي/تمارين منزلية).\n"
-        "5) إن وُجدت أفكار إيذاء، اطلب مساعدة فورية من الطوارئ/الخطوط الداعمة.",
-}
-def therapy_menu_kb():
-    rows = []
-    for i in range(0, len(THERAPY_ITEMS), 2):
-        chunk = THERAPY_ITEMS[i:i+2]
-        rows.append([{"text": t, "callback_data": k} for (t, k) in chunk])
-    rows.append([{"text": "⬅️ رجوع", "callback_data": "home"}])
-    return kb_inline(rows)
 
-# ========= Routes =========
-@app.get("/")
-def root():
-    return jsonify({
+TESTS = {
+    "g7": {"name": "مقياس القلق GAD-7", "q": G7},
+    "phq": {"name": "مقياس الاكتئاب PHQ-9", "q": PHQ9},
+}
+
+# حالة الجلسات البسيطة بالذاكرة
+SESS = {}   # { user_id: {"key":"g7","i":0,"score":0} }
+
+def start_test(chat_id, user_id, key):
+    data = TESTS[key]
+    SESS[user_id] = {"key": key, "i": 0, "score": 0}
+    send(chat_id, f"سنبدأ: <b>{data['name']}</b>\nأجب حسب آخر أسبوعين.", reply_markup=reply_kb())
+    ask_next(chat_id, user_id)
+
+def ask_next(chat_id, user_id):
+    st = SESS.get(user_id)
+    if not st: 
+        return
+    key, i = st["key"], st["i"]
+    qs = TESTS[key]["q"]
+    if i >= len(qs):
+        # انهاء وحساب النتيجة
+        score = st["score"]
+        total = len(qs)*3
+        interpretation = interpret(key, score)
+        send(chat_id, f"النتيجة: <b>{score}</b> من {total}\n{interpretation}", reply_markup=reply_kb())
+        # تنظيف
+        SESS.pop(user_id, None)
+        return
+    q = qs[i]
+    # أزرار قصيرة لتفادي مشكلة طول callback_data
+    row1 = [{"text": f"{ANS[0][0]}", "callback_data": f"a0"},
+            {"text": f"{ANS[1][0]}", "callback_data": f"a1"}]
+    row2 = [{"text": f"{ANS[2][0]}", "callback_data": f"a2"},
+            {"text": f"{ANS[3][0]}", "callback_data": f"a3"}]
+    send(chat_id, f"س{ i+1 }: {q}", reply_markup=inline_rows([row1, row2]))
+
+def record_answer(chat_id, user_id, a_idx):
+    st = SESS.get(user_id)
+    if not st:
+        return
+    score_add = ANS[a_idx][1]
+    st["score"] += score_add
+    st["i"] += 1
+    ask_next(chat_id, user_id)
+
+def interpret(key, score):
+    if key == "g7":
+        if score <= 4: lvl = "قلق ضئيل"
+        elif score <= 9: lvl = "قلق خفيف"
+        elif score <= 14: lvl = "قلق متوسط"
+        else: lvl = "قلق شديد"
+        tips = "جرّب تمارين التنفّس، تقليل الكافيين، وروتين نوم ثابت."
+        return f"<b>{lvl}</b>.\nنصيحة: {tips}"
+    if key == "phq":
+        if score <= 4: lvl = "اكتئاب ضئيل"
+        elif score <= 9: lvl = "خفيف"
+        elif score <= 14: lvl = "متوسط"
+        elif score <= 19: lvl = "متوسط إلى شديد"
+        else: lvl = "شديد"
+        tips = "نشّط يومك بمهام صغيرة ممتعة + تواصل اجتماعي + جدول نوم."
+        return f"<b>{lvl}</b>.\nنصيحة: {tips}"
+    return "تم."
+
+def tests_menu(chat_id):
+    rows = [
+        [{"text": "اختبار القلق (GAD-7)", "callback_data": "t:g7"}],
+        [{"text": "اختبار الاكتئاب (PHQ-9)", "callback_data": "t:phq"}],
+    ]
+    send(chat_id, "اختر اختبارًا:", reply_markup=inline_rows(rows))
+
+# ======================
+# محتوى علاجي مبسّط
+# ======================
+def reply_cbt(chat_id):
+    send(chat_id,
+         "العلاج السلوكي المعرفي (CBT):\n"
+         "1) راقب الفكرة المزعجة.\n2) قيّم الدليل معها/ضدها.\n3) استبدلها بفكرة متوازنة.\n"
+         "اكتب لي كلمة: <b>تفكير</b> أو <b>تنفّس</b> لأعطيك خطوات سريعة.",
+         reply_markup=reply_kb())
+
+def reply_sleep(chat_id):
+    send(chat_id,
+         "نصائح النوم:\n• ثبّت وقت النوم والاستيقاظ\n• قلّل من الشاشات قبل النوم\n• تجنّب الكافيين مساءً\n• جرّب تنفّس 4-7-8 قبل السرير.",
+         reply_markup=reply_kb())
+
+def reply_sad(chat_id):
+    send(chat_id,
+         "إذا كنت تشعر بالحزن:\n• افعل نشاطًا صغيرًا ممتعًا الآن\n• تواصل مع شخص مقرّب\n• اكتب 3 أشياء ممتنّ لها اليوم.",
+         reply_markup=reply_kb())
+
+def reply_breath(chat_id):
+    send(chat_id,
+         "تنفّس هدّئ أعصابك الآن:\nاستنشق 4 ثوانٍ – احبس 4 – ازفر 6… كرّر 6 مرات.",
+         reply_markup=reply_kb())
+
+def notify_contact(chat_id, message):
+    user = message.get("from", {})
+    username = user.get("username") or (user.get("first_name","") + " " + user.get("last_name","")).strip() or "مستخدم"
+    send(chat_id, "تم تسجيل طلب تواصل ✅ سنرجع لك قريبًا.", reply_markup=reply_kb())
+    if ADMIN_CHAT_ID:
+        info = (
+            "📩 طلب تواصل\n"
+            f"الاسم: {username} (id={user.get('id')})\n"
+            f"النص: {message.get('text') or ''}"
+        )
+        tg("sendMessage", {"chat_id": ADMIN_CHAT_ID, "text": info})
+
+# ======================
+# ويبهوك
+# ======================
+@app.route("/", methods=["GET"])
+def home():
+    data = {
         "app": "Arabi Psycho Telegram Bot",
-        "public_url": (PUBLIC_URL or request.url_root).rstrip("/"),
-        "webhook": f"/webhook/{WEBHOOK_SECRET[:3]}*****"
-    })
+        "public_url": RENDER_EXTERNAL_URL,
+        "status": "ok",
+        "webhook": f"/webhook/{WEBHOOK_SECRET} (masked)"
+    }
+    return jsonify(data)
 
-@app.get("/setwebhook")
-def setwebhook():
-    if not PUBLIC_URL:
-        return jsonify({"ok": False, "reason": "No PUBLIC_URL/RENDER_EXTERNAL_URL"}), 400
-    url = f"{PUBLIC_URL.rstrip('/')}/webhook/{WEBHOOK_SECRET}"
-    return jsonify(tg("setWebhook", {"url": url}))
+@app.route("/setwebhook", methods=["GET"])
+def set_hook():
+    if not RENDER_EXTERNAL_URL:
+        return jsonify({"ok": False, "error": "RENDER_EXTERNAL_URL not set"}), 400
+    url = f"{RENDER_EXTERNAL_URL}/webhook/{WEBHOOK_SECRET}"
+    r = tg("setWebhook", {"url": url})
+    return r.json(), r.status_code
 
-@app.post(f"/webhook/{WEBHOOK_SECRET}")
+@app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook():
     update = request.get_json(force=True, silent=True) or {}
-    log.info("update: %s", update)
-
-    # ==== Callback ====
+    # callback query
     if "callback_query" in update:
         cq = update["callback_query"]
-        data = cq.get("data", "")
-        chat_id = cq.get("message", {}).get("chat", {}).get("id")
-        msg_id = cq.get("message", {}).get("message_id")
-        answer_cbq(cq.get("id"))
+        data = cq.get("data") or ""
+        chat_id = cq["message"]["chat"]["id"]
+        user_id = cq["from"]["id"]
 
-        # مساعدة
-        if data == "menu:help":
-            edit_msg(chat_id, msg_id,
-                     "الأوامر:\n"
-                     "/start — القائمة\n/menu — عرض القوائم\n"
-                     "/cbt — قائمة CBT\n/therapy — جلسات علاجية\n/testkb — اختبار الأزرار\n/whoami — المعرّفات",
-                     main_menu_kb())
+        # بدء اختبار
+        if data.startswith("t:"):
+            key = data.split(":",1)[1]
+            if key in TESTS:
+                start_test(chat_id, user_id, key)
+            else:
+                send(chat_id, "اختيار غير معروف.", reply_markup=reply_kb())
             return "ok", 200
 
-        # رجوع للصفحة الرئيسية
-        if data == "home":
-            edit_msg(chat_id, msg_id, "القائمة الرئيسية:", main_menu_kb())
-            return "ok", 200
-
-        # قوائم العلاج النفسي
-        if data == "th:menu":
-            edit_msg(chat_id, msg_id, "اختر جلسة علاجية:", therapy_menu_kb())
-            return "ok", 200
-
-        if data in THERAPY_CONTENT:
-            kb = kb_inline([[{"text": "⬅️ رجوع", "callback_data": "th:menu"}]])
-            edit_msg(chat_id, msg_id, THERAPY_CONTENT[data], kb)
-            return "ok", 200
-
-        # قوائم CBT
-        if data == "tx:menu":
-            edit_msg(chat_id, msg_id, "اختر موضوعًا من العلاج السلوكي:", cbt_menu_kb())
-            return "ok", 200
-
-        if data in CBT_CONTENT:
-            title = next((t for t, k in CBT_ITEMS if k == data), "العلاج")
-            kb = kb_inline([[{"text": "⬅️ رجوع", "callback_data": "tx:menu"}]])
-            edit_msg(chat_id, msg_id, f"<b>{title}</b>\n\n{CBT_CONTENT[data]}", kb)
-            return "ok", 200
-
-        return "ok", 200
-
-    # ==== Messages ====
-    message = update.get("message") or update.get("edited_message") or {}
-    if not message:
-        return "ok", 200
-
-    chat_id = message.get("chat", {}).get("id")
-    text = (message.get("text") or "").strip()
-    low = text.lower()
-
-    def is_cmd(name): return low.startswith(f"/{name}")
-
-    # أوامر
-    if is_cmd("start") or is_cmd("menu"):
-        show_both_menus(chat_id);  return "ok", 200
-
-    if is_cmd("cbt"):
-        send(chat_id, "اختر موضوعًا من العلاج السلوكي:", cbt_menu_kb());  return "ok", 200
-
-    if is_cmd("therapy"):
-        send(chat_id, "اختر جلسة علاجية:", therapy_menu_kb());  return "ok", 200
-
-    if is_cmd("testkb"):
-        send(chat_id, "تجربة الأزرار:", kb_inline([[{"text": "زر 1","callback_data":"z1"}],[{"text":"زر 2","callback_data":"z2"}]]))
-        send(chat_id, "لوحة الأزرار السفلية:", kb_reply());  return "ok", 200
-
-    if is_cmd("whoami"):
-        uid = message.get("from", {}).get("id")
-        send(chat_id, f"chat_id: {chat_id}\nuser_id: {uid}");  return "ok", 200
-
-    if is_cmd("help"):
-        send(chat_id, "الأوامر:\n/start\n/menu\n/cbt\n/therapy\n/testkb\n/whoami");  return "ok", 200
-
-    # نوايا سريعة
-    if "نوم" in text:
-        send(chat_id, THERAPY_CONTENT["th:sleep"], kb_reply())
-        send(chat_id, "مزيد من الجلسات:", therapy_menu_kb());  return "ok", 200
-
-    if "حزن" in text:
-        send(chat_id, THERAPY_CONTENT["th:sad"], kb_reply())
-        send(chat_id, "مزيد من الجلسات:", therapy_menu_kb());  return "ok", 200
-
-    if "اكتئاب" in text or "الاكتئاب" in text:
-        send(chat_id, THERAPY_CONTENT["th:dep"], kb_reply())
-        send(chat_id, "مزيد من الجلسات:", therapy_menu_kb());  return "ok", 200
-
-    if "تواصل" in text:
-        send(chat_id, "تم تسجيل طلب تواصل ✅ سنرجع لك قريبًا.", kb_reply())
-        if ADMIN_CHAT_ID:
-            user = message.get("from", {})
-            username = user.get("username") or (user.get("first_name","") + " " + user.get("last_name","")).strip() or "مستخدم"
-            info = (f"📩 طلب تواصل\n"
-                    f"👤 {username} (id={user.get('id')})\n"
-                    f"🔗 chat_id={chat_id}\n"
-                    f"💬 النص: “{text}”")
+        # إجابة سؤال (a0..a3)
+        if data.startswith("a"):
             try:
-                tg("sendMessage", {"chat_id": int(ADMIN_CHAT_ID), "text": info})
-            except Exception:
-                pass
+                a_idx = int(data[1:])
+                if 0 <= a_idx <= 3:
+                    record_answer(chat_id, user_id, a_idx)
+            except:
+                send(chat_id, "إجابة غير صالحة.", reply_markup=reply_kb())
+            return "ok", 200
+
+        # غير ذلك
+        send(chat_id, "تم.", reply_markup=reply_kb())
         return "ok", 200
 
-    # رد عام
-    send(chat_id, f"تمام 👌 وصلتني: “{text}”\nاكتب /menu لعرض الأزرار.", kb_reply())
+    # رسالة عادية
+    if "message" in update:
+        message = update["message"]
+        chat_id = message["chat"]["id"]
+        text = (message.get("text") or "").strip()
+        low = text.replace("أ", "ا").replace("إ", "ا").replace("آ","ا").strip().lower()
+
+        # أوامر
+        if is_cmd(text, "start") or is_cmd(text, "menu"):
+            send(chat_id,
+                 "مرحبًا! أنا <b>عربي سايكو</b>.\n"
+                 "عندي جلسات وأدوات سريعة + اختبارات نفسية.\n"
+                 "اكتب /tests لفتح الاختبارات.",
+                 reply_markup=reply_kb())
+            return "ok", 200
+
+        if is_cmd(text, "tests") or low == "اختبارات":
+            tests_menu(chat_id);  return "ok", 200
+
+        if is_cmd(text, "cbt"):
+            reply_cbt(chat_id);  return "ok", 200
+
+        if is_cmd(text, "whoami"):
+            uid = message.get("from", {}).get("id")
+            send(chat_id, f"chat_id: {chat_id}\nuser_id: {uid}")
+            return "ok", 200
+
+        # كلمات سريعة
+        if low == "نوم":
+            reply_sleep(chat_id);  return "ok", 200
+        if low == "حزن":
+            reply_sad(chat_id);    return "ok", 200
+        if low in ["تنفس","تنفّس","تنفس"]:
+            reply_breath(chat_id); return "ok", 200
+        if low in ["تواصل","تواصل."]:
+            notify_contact(chat_id, message);  return "ok", 200
+        if low in ["مساعدة","help","/help"]:
+            send(chat_id, "الأوامر: /menu /tests /cbt\nوجرّب الأزرار بالأسفل.", reply_markup=reply_kb()); return "ok", 200
+
+        # تلقائي
+        send(chat_id, f"تمام 👌 وصلتني: “{text}”", reply_markup=reply_kb())
+        return "ok", 200
+
     return "ok", 200
 
-# ========= Auto set webhook =========
-def ensure_webhook():
-    if not PUBLIC_URL:
-        log.warning("No PUBLIC_URL; skip setWebhook.");  return
-    url = f"{PUBLIC_URL.rstrip('/')}/webhook/{WEBHOOK_SECRET}"
-    res = tg("setWebhook", {"url": url})
-    log.info("setWebhook -> %s", res)
-
-ensure_webhook()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
