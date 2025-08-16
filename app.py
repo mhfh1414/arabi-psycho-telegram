@@ -1,6 +1,4 @@
-# app.py — Arabi Psycho Telegram Bot (menus fixed)
-# يظهر أزرار القائمة وCBT بشكل موثوق في الخاص والمجموعات
-
+# app.py — Arabi Psycho Telegram Bot (Inline + Reply keyboards)
 import os, logging, requests
 from flask import Flask, request, jsonify
 
@@ -9,9 +7,9 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN env var")
 
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "secret")  # ضع قيمة قوية
-PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")  # Render يملؤها تلقائيا
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # اختياري لإشعارات "تواصل"
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "secret")
+PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")  # اختياري
 
 BOT_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
@@ -54,24 +52,36 @@ def answer_cbq(cbq_id, text=""):
     return tg("answerCallbackQuery", {"callback_query_id": cbq_id, "text": text})
 
 def kb_inline(rows):
-    # rows = [[{"text":"..","callback_data":".."}, ...], ...]
     return {"inline_keyboard": rows}
 
-# ========= Main menu =========
+def kb_reply():  # قائمة سفلية دائمة
+    return {
+        "keyboard": [
+            [{"text": "نوم"}, {"text": "حزن"}],
+            [{"text": "تنفس"}, {"text": "تواصل"}],
+            [{"text": "مساعدة"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True
+    }
+
+# ========= Main menu (inline) =========
 def main_menu_kb():
     return kb_inline([
         [{"text": "🧠 العلاج السلوكي المعرفي (CBT)", "callback_data": "tx:menu"}],
         [{"text": "ℹ️ مساعدة", "callback_data": "menu:help"}],
-        [{"text": "🧪 اختبار الأزرار (تشخيص)", "callback_data": "menu:test"}],
+        [{"text": "🧪 اختبار الأزرار", "callback_data": "menu:test"}],
     ])
 
-def show_main_menu(chat_id):
+def show_both_menus(chat_id):
     send(chat_id,
          "أنا <b>عربي سايكو</b> 🤝\n"
-         "اختر من القائمة، أو اكتب: علاج / نوم / قلق / تواصل …",
+         "اختر من القائمة أو استخدم الأزرار السفلية.",
          kb=main_menu_kb())
+    # رسالة ثانية تفعّل لوحة الأزرار السفلية
+    send(chat_id, "لوحة الأزرار السفلية:", kb_reply())
 
-# ========= CBT content (قصير وبـ callback_data قصيرة ≤64 بايت) =========
+# ========= CBT =========
 CBT_ITEMS = [
     ("أخطاء التفكير", "tx:te"),
     ("الاجترار والكبت", "tx:rum"),
@@ -82,7 +92,6 @@ CBT_ITEMS = [
     ("حل المشكلات", "tx:ps"),
     ("سلوكيات الأمان", "tx:safety"),
 ]
-
 CBT_TITLES = {
     "tx:te": "أخطاء التفكير",
     "tx:rum": "الاجترار والكبت",
@@ -93,53 +102,16 @@ CBT_TITLES = {
     "tx:ps": "حل المشكلات",
     "tx:safety": "سلوكيات الأمان",
 }
-
 CBT_CONTENT = {
-    "tx:te": (
-        "أشهر أخطاء التفكير:\n"
-        "• التعميم: «دايمًا أفشل».\n"
-        "• قراءة الأفكار: «أكيد يكرهني».\n"
-        "• التنبؤ السلبي: «أكيد بيصير أسوأ».\n"
-        "• التهويل/التقليل.\n"
-        "استبدل الفكرة بدليل واقعي وصياغة متوازنة."
-    ),
-    "tx:rum": (
-        "الاجترار = تدوير الفكرة بلا فعل.\n"
-        "الكبت = محاولة طردها (غالبًا ترجع أقوى).\n"
-        "الحل: لاحظ الفكرة، دعها تمرّ، وانقل انتباهك لنشاط مفيد."
-    ),
-    "tx:10q": (
-        "لتحدي الفكرة:\n"
-        "1) ما الدليل معها/ضدها؟\n"
-        "2) هل أعمم؟ أقرأ أفكار؟\n"
-        "3) أسوأ/أفضل/أغلب ما سيحدث؟\n"
-        "4) ماذا أقول لصديق مكاني؟\n"
-        "5) ما السلوك المفيد الآن؟"
-    ),
-    "tx:relax": (
-        "تنفّس 4-4-6 ×10:\n"
-        "شهيق 4 ث → حبس 4 → زفير 6.\n"
-        "إرخاء عضلي تدريجي من القدم للرأس."
-    ),
-    "tx:ba": (
-        "للإحباط/الاكتئاب: أضف نشاطات ممتعة/نافعة صغيرة يوميًا (5–10 دقائق).\n"
-        "سجّلها وقيّم مزاجك قبل/بعد."
-    ),
-    "tx:mind": (
-        "يقظة ذهنية 3×3×3:\n"
-        "اذكر 3 أشياء تراها، 3 تسمعها، 3 تلمسها.\n"
-        "ارجع للحظة بدون حكم."
-    ),
-    "tx:ps": (
-        "حل المشكلات:\n"
-        "عرّف المشكلة → اعصف بالخيارات → اختر خطة S.M.A.R.T → جرّب وقيّم."
-    ),
-    "tx:safety": (
-        "سلوكيات الأمان (تجنب/طمأنة) تُبقي القلق.\n"
-        "قلّلها تدريجيًا مع تعرّض آمن ومخطط."
-    ),
+    "tx:te": "أشهر أخطاء التفكير:\n• التعميم\n• قراءة الأفكار\n• التنبؤ السلبي\n• التهويل/التقليل\nاستبدلها بصياغة متوازنة مبنية على أدلة.",
+    "tx:rum": "الاجترار تدوير الفكرة بلا فعل، والكبت يزيدها. لاحظها ودعها تمرّ، وانقل انتباهك لنشاط مفيد.",
+    "tx:10q": "أسئلة لتحدي الفكرة: الدليل معها/ضدها؟ هل أعمم؟ أسوأ/أفضل/الأغلب؟ ماذا أقول لصديق مكاني؟ ما السلوك المفيد الآن؟",
+    "tx:relax": "تنفّس 4-4-6 ×10: شهيق4/حبس4/زفير6. مع إرخاء عضلي تدريجي.",
+    "tx:ba": "أضف نشاطات ممتعة/نافعة صغيرة يوميًا وقيّم مزاجك قبل/بعد.",
+    "tx:mind": "يقظة ذهنية 3×3×3: 3 أشياء تراها/تسمعها/تلمسها بلا حكم.",
+    "tx:ps": "حل المشكلات: عرّف المشكلة → خيارات → خطة SMART → جرّب وقيّم.",
+    "tx:safety": "سلوكيات الأمان (تجنّب/طمأنة) تُبقي القلق. قلّلها تدريجيًا مع تعرّض آمن.",
 }
-
 def cbt_menu_kb():
     rows = []
     for i in range(0, len(CBT_ITEMS), 2):
@@ -148,7 +120,7 @@ def cbt_menu_kb():
     rows.append([{"text": "⬅️ رجوع للقائمة", "callback_data": "tx:back"}])
     return kb_inline(rows)
 
-# ========= Webhook routes =========
+# ========= Routes =========
 @app.get("/")
 def root():
     return jsonify({
@@ -162,32 +134,26 @@ def setwebhook():
     if not PUBLIC_URL:
         return jsonify({"ok": False, "reason": "No PUBLIC_URL/RENDER_EXTERNAL_URL"}), 400
     url = f"{PUBLIC_URL.rstrip('/')}/webhook/{WEBHOOK_SECRET}"
-    res = tg("setWebhook", {"url": url})
-    return jsonify(res)
+    return jsonify(tg("setWebhook", {"url": url}))
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook():
     update = request.get_json(force=True, silent=True) or {}
     log.info("update: %s", update)
 
-    # 1) Callback query (أزرار)
+    # ==== Callback ====
     if "callback_query" in update:
         cq = update["callback_query"]
         data = cq.get("data", "")
         chat_id = cq.get("message", {}).get("chat", {}).get("id")
         msg_id = cq.get("message", {}).get("message_id")
-        cbq_id = cq.get("id")
-        answer_cbq(cbq_id)
+        answer_cbq(cq.get("id"))
 
-        # قائمة رئيسية
         if data == "menu:help":
             send(chat_id,
                  "الأوامر:\n"
-                 "/start — القائمة الرئيسية\n"
-                 "/menu — عرض القائمة\n"
-                 "/cbt — قائمة العلاج السلوكي\n"
-                 "/testkb — اختبار الأزرار\n"
-                 "/whoami — عرض المعرّفات")
+                 "/start — القائمة\n/menu — عرض القوائم\n"
+                 "/cbt — قائمة CBT\n/testkb — اختبار الأزرار\n/whoami — المعرّفات")
             return "ok", 200
 
         if data == "menu:test":
@@ -202,9 +168,8 @@ def webhook():
             edit_msg(chat_id, msg_id, f"✅ اشتغل الزر: {data}", main_menu_kb())
             return "ok", 200
 
-        # CBT
         if data == "tx:menu":
-            edit_msg(chat_id, msg_id, "اختر موضوعًا من العلاج السلوكي المعرفي:", cbt_menu_kb())
+            edit_msg(chat_id, msg_id, "اختر موضوعًا من العلاج السلوكي:", cbt_menu_kb())
             return "ok", 200
 
         if data == "tx:back":
@@ -213,14 +178,13 @@ def webhook():
 
         if data in CBT_CONTENT:
             title = CBT_TITLES.get(data, "العلاج")
-            text = f"<b>{title}</b>\n\n{CBT_CONTENT[data]}"
             kb = kb_inline([[{"text": "⬅️ رجوع لقائمة CBT", "callback_data": "tx:menu"}]])
-            edit_msg(chat_id, msg_id, text, kb)
+            edit_msg(chat_id, msg_id, f"<b>{title}</b>\n\n{CBT_CONTENT[data]}", kb)
             return "ok", 200
 
         return "ok", 200
 
-    # 2) رسائل عادية
+    # ==== Messages ====
     message = update.get("message") or update.get("edited_message") or {}
     if not message:
         return "ok", 200
@@ -229,38 +193,22 @@ def webhook():
     text = (message.get("text") or "").strip()
     low = text.lower()
 
-    def is_cmd(name):  # /cmd
-        return low.startswith(f"/{name}")
+    def is_cmd(name): return low.startswith(f"/{name}")
 
-    # أوامر أساسية
-    if is_cmd("start"):
-        show_main_menu(chat_id)
-        return "ok", 200
-
-    if is_cmd("menu"):
-        send(chat_id, "القائمة الرئيسية:", main_menu_kb())
-        return "ok", 200
-
-    if is_cmd("help"):
-        send(chat_id,
-             "الأوامر:\n"
-             "/start — القائمة الرئيسية\n"
-             "/menu — عرض القائمة\n"
-             "/cbt — قائمة العلاج السلوكي\n"
-             "/testkb — اختبار الأزرار\n"
-             "/whoami — عرض المعرّفات")
+    if is_cmd("start") or is_cmd("menu"):
+        show_both_menus(chat_id)
         return "ok", 200
 
     if is_cmd("cbt") or ("علاج" in low):
-        send(chat_id, "اختر موضوعًا من العلاج السلوكي المعرفي:", cbt_menu_kb())
+        send(chat_id, "اختر موضوعًا من العلاج السلوكي:", cbt_menu_kb())
         return "ok", 200
 
     if is_cmd("testkb"):
-        test_kb = kb_inline([
+        send(chat_id, "تجربة الأزرار:", kb_inline([
             [{"text": "زر 1", "callback_data": "z1"}],
             [{"text": "زر 2", "callback_data": "z2"}],
-        ])
-        send(chat_id, "تجربة الأزرار:", test_kb)
+        ]))
+        send(chat_id, "لوحة الأزرار السفلية:", kb_reply())
         return "ok", 200
 
     if is_cmd("whoami"):
@@ -268,18 +216,27 @@ def webhook():
         send(chat_id, f"chat_id: {chat_id}\nuser_id: {uid}")
         return "ok", 200
 
-    # ردود سريعة + إشعار تواصل
+    if is_cmd("help"):
+        send(chat_id,
+             "الأوامر:\n"
+             "/start — القائمة\n/menu — عرض القوائم\n"
+             "/cbt — قائمة CBT\n/testkb — اختبار الأزرار\n/whoami — المعرّفات")
+        return "ok", 200
+
+    # ردود سريعة + تواصل
     intents = {
         "سلام": "وعليكم السلام ورحمة الله ✨",
         "مرحبا": "أهلًا وسهلًا! كيف أقدر أساعدك؟",
-        "نوم": "جرّب تنام 7-8 ساعات، وثبّت وقت النوم، وقلّل المنبهات مساءً 😴",
-        "قلق": "خذ 3 أنفاس بطيئة، وركّز على ما حولك الآن. أنت بخير.",
-        "حزن": "جرّب نشاطًا صغيرًا ممتعًا اليوم ولو 10 دقائق.",
+        "نوم": "نم 7-8 ساعات وثبّت وقت النوم وقلّل المنبهات مساءً 😴",
+        "قلق": "خذ 3 أنفاس بطيئة وركّز على الحاضر. أنت بخير.",
+        "حزن": "جرّب نشاطًا ممتعًا قصيرًا اليوم.",
+        "تنفس": "تنفّس 4-4-6 ×10: شهيق4/حبس4/زفير6.",
+        "مساعدة": "اكتب /menu أو /cbt لعرض القوائم.",
         "تواصل": "تم تسجيل طلب تواصل ✅ سنرجع لك قريبًا.",
     }
     for k, v in intents.items():
         if k in text:
-            send(chat_id, v)
+            send(chat_id, v, kb_reply())
             if k == "تواصل" and ADMIN_CHAT_ID:
                 user = message.get("from", {})
                 username = user.get("username") or (user.get("first_name","") + " " + user.get("last_name","")).strip() or "مستخدم"
@@ -293,14 +250,13 @@ def webhook():
                     pass
             return "ok", 200
 
-    # افتراضي
-    send(chat_id, f"تمام 👌 وصلتني: “{text}”\nاكتب /menu لعرض الأزرار.")
+    send(chat_id, f"تمام 👌 وصلتني: “{text}”\nاكتب /menu لعرض الأزرار.", kb_reply())
     return "ok", 200
 
-# ========= (اختياري) تعيين الويبهوك تلقائيًا عند الإقلاع =========
+# ========= Auto set webhook =========
 def ensure_webhook():
     if not PUBLIC_URL:
-        log.warning("No PUBLIC_URL/RENDER_EXTERNAL_URL set; skip setWebhook.")
+        log.warning("No PUBLIC_URL; skip setWebhook.")
         return
     url = f"{PUBLIC_URL.rstrip('/')}/webhook/{WEBHOOK_SECRET}"
     res = tg("setWebhook", {"url": url})
