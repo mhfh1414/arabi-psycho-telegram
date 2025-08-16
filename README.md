@@ -1,7 +1,19 @@
-# Arabi Psycho – Telegram Bot (CBT + Menu)
+# Arabi Psycho Telegram Bot
 
-نشر على Render:
-- Build: pip install -r requirements.txt
-- Start: gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
-- Env Vars: TELEGRAM_BOT_TOKEN (+ WEBHOOK_SECRET اختياري)
-- بعد ما تصير Live: افتح /setwebhook ثم جرّب /start و /cbt.
+مساعد نفسي تعليمي (CBT + اختبارات قصيرة) يعمل كويبهوك على Render.
+
+## الإعداد
+1) أنشئ بوت تيليجرام من @BotFather وخذ التوكن.
+2) ارفع الملفات إلى GitHub (app.py / requirements.txt / render-start.txt / README.md).
+3) على Render: New → Web Service → اربط المستودع.
+   - Build Command: pip install -r requirements.txt
+   - Start Command: contents of render-start.txt (يُقرأ تلقائيًا إذا استخدمتها هناك)
+4) Environment Variables:
+   - TELEGRAM_BOT_TOKEN = (من BotFather)
+   - WEBHOOK_SECRET = (أي قيمة قوية، مثلاً 32 حرفًا)
+   - RENDER_EXTERNAL_URL = (يُملأ تلقائيًا من Render)
+   - ADMIN_CHAT_ID = (اختياري للتنبيهات)
+   - CONTACT_PHONE = (اختياري لظهور رقم التواصل في /help)
+
+## أوامر
+/start, /help, /tests, /therapy, /cbt, /whoami
