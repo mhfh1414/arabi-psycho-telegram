@@ -1,309 +1,717 @@
-# app.py — Arabi Psycho (Clean Menu: AI Chat inside 'Arabi Psycho' only)
-import os, logging
-from flask import Flask, request, jsonify
-import requests
+# app.py — عربي سايكو: AI Chat + CBT + اختبارات قوية + اضطرابات الشخصية + التسعيرة (ملف واحد)
+# Python 3.10+ | python-telegram-bot v21
 
-# -------- Config --------
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
-BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+import os, re, asyncio
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 
-WEBHOOK_SECRET      = os.environ.get("WEBHOOK_SECRET", "secret")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
-ADMIN_CHAT_ID       = os.environ.get("ADMIN_CHAT_ID", "")
-CONTACT_PHONE       = os.environ.get("CONTACT_PHONE", "")
-
-# AI (OpenAI-compatible مثل OpenRouter) — اختياري
-AI_BASE_URL = (os.environ.get("AI_BASE_URL","") or "").rstrip("/")
-AI_API_KEY  = os.environ.get("AI_API_KEY","")
-AI_MODEL    = os.environ.get("AI_MODEL","")
-def ai_ready(): return bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
-
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("arabi-psycho")
-
-# -------- Helpers --------
-def tg(method, payload):
-    r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=20)
-    if r.status_code != 200:
-        log.warning("TG %s -> %s | %s", method, r.status_code, r.text[:300])
-    return r
-
-def send(cid, text, reply_markup=None, parse_mode="HTML"):
-    payload = {"chat_id": cid, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
-    if reply_markup: payload["reply_markup"] = reply_markup
-    return tg("sendMessage", payload)
-
-def inline(rows): return {"inline_keyboard": rows}
-
-def menu_kb():
-    # ثلاث أزرار فقط — لا تكرار
-    return {
-        "keyboard": [
-            [{"text": "🧠 عربي سايكو"}],
-            [{"text": "💊 العلاج السلوكي المعرفي (CBT)"}],
-            [{"text": "📝 الاختبارات النفسية"}],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True
-    }
-
-def is_cmd(txt, name): return (txt or "").strip().lower().startswith("/"+name)
-def norm(s): return (s or "").replace("أ","ا").replace("إ","ا").replace("آ","ا").strip().lower()
-
-# -------- Safety --------
-CRISIS_WORDS = ["انتحار", "اذي نفسي", "قتل نفسي", "ما ابغى اعيش", "لا اريد العيش"]
-def crisis_guard(text): return any(w in norm(text) for w in CRISIS_WORDS)
-
-# -------- Intro --------
-INTRO = (
-    "مرحبًا! هذه قائمتك الرئيسية:\n"
-    "• 🧠 <b>عربي سايكو</b>: تعريف سريع + المساعدة + التواصل، ثم <i>تفضل وابدأ شكواك الآن</i>.\n"
-    "• 💊 <b>العلاج السلوكي المعرفي (CBT)</b>: بطاقات عملية قصيرة.\n"
-    "• 📝 <b>الاختبارات النفسية</b>: قلق/اكتئاب/هلع.\n\n"
-    "<b>تنبيه مهم:</b> لستُ بديلاً عن التشخيص أو العلاج لدى مختص. المشروع تحت إشراف "
-    "<b>أخصائي نفسي مرخّص</b>."
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
 
-# -------- CBT --------
-CBT_INTRO = (
-    "🧠 <b>العلاج السلوكي المعرفي (CBT)</b>\n"
-    "يربط <b>الأفكار ↔ المشاعر ↔ السلوك</b> بخطوات عملية قصيرة. ابدأ ببطاقة وطبّق 5–10 دقائق."
-)
-CBT_CARDS = [
-    ("سجلّ الأفكار",
-     "١) الموقف والمشاعر.\n٢) الفكرة التلقائية.\n٣) أدلة مع/ضد.\n٤) صياغة متوازنة.\n٥) قيّم الانزعاج (0–10) قبل/بعد."),
-    ("أخطاء التفكير",
-     "الأبيض/الأسود، التعميم، قراءة الأفكار، التنبؤ، التهويل/التقليل… اسأل: ما البديل الواقعي المتوازن؟"),
-    ("الأسئلة العشرة",
-     "الدليل؟ البدائل؟ أسوأ/أفضل/أرجح؟ لو صديق مكاني؟ هل أتجاهل الإيجابي؟"),
-    ("التعرّض التدريجي (قلق/هلع)",
-     "اكتب سلّم 0–10. ابدأ من 3–4/10: تعرّض آمن بلا طمأنة/هروب حتى يهبط القلق، ثم اصعد درجة."),
-    ("التنشيط السلوكي (مزاج)",
-     "نشاط ممتع صغير + نافع صغير يوميًا. قاعدة 5 دقائق. سجّل المزاج قبل/بعد."),
-    ("الاسترخاء والتنفس",
-     "تنفّس 4–7–8 ×6. شد/إرخِ العضلات من القدم للرأس: 5 ثوان شد ثم 10 ثوان إرخاء."),
-    ("اليقظة الذهنية",
-     "تمرين 5–4–3–2–1 للحواس: ارجع للحاضر بلطف وبدون حكم."),
-    ("حلّ المشكلات",
-     "عرّف المشكلة بدقة → بدائل صغيرة → خطوة SMART → جرّب → قيّم وعدّل."),
-    ("بروتوكول النوم",
-     "ثبّت الاستيقاظ يوميًا، سرير=نوم فقط، طقوس تهدئة 30–45د، قلّل الكافيين مساءً."),
-]
-def cbt_menu(cid):
-    send(cid, CBT_INTRO, menu_kb())
-    rows = [[{"text": t, "callback_data": "cbt:"+t}] for (t,_) in CBT_CARDS]
-    send(cid, "اختر بطاقة من العلاج السلوكي:", inline(rows))
-def cbt_send(cid, title):
-    for (t, body) in CBT_CARDS:
-        if t == title:
-            send(cid, f"<b>{t}</b>\n{body}", menu_kb()); break
+# ====== إعداد التوكن ومفاتيح الذكاء الاصطناعي ======
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # ضع توكن تيليجرام في البيئة
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# -------- Tests --------
-ANS4 = [("أبدًا",0), ("عدة أيام",1), ("أكثر من النصف",2), ("تقريبًا يوميًا",3)]
-ANS5 = [("0",0), ("1",1), ("2",2), ("3",3), ("4",4)]
-GAD7 = ["التوتر/العصبية أو الشعور بالقلق","عدم القدرة على التوقف عن القلق أو السيطرة عليه",
-        "الانشغال بالهموم بدرجة كبيرة","صعوبة الاسترخاء","تململ/صعوبة الجلوس بهدوء",
-        "الانزعاج بسرعة أو العصبية","الخوف من حدوث شيء سيئ"]
-PHQ9 = ["قلة الاهتمام أو المتعة","الحزن/اليأس","مشاكل النوم","قلة الطاقة",
-        "الشهية (ضعف/زيادة)","الشعور بالذنب/عدم القيمة","صعوبة التركيز",
-        "بطء/توتر بالحركة أو الكلام","أفكار أنك أفضل لو لم تكن موجودًا"]
-PANIC7 = ["عدد نوبات الهلع","شدة أعراض النوبة","القلق الاستباقي","التجنّب",
-          "التأثير على العمل/الدراسة","التأثير على العلاقات/الخروج","سلوكيات الأمان"]
+# محاولة استيراد عميل OpenAI الحديث
+try:
+    from openai import OpenAI
+    _HAS_OPENAI = True
+except Exception:
+    _HAS_OPENAI = False
 
-TESTS = {
-    "g7":   {"name":"اختبار القلق (GAD-7)","q":GAD7,   "ans":ANS4,"max":21},
-    "phq":  {"name":"اختبار الاكتئاب (PHQ-9)","q":PHQ9,"ans":ANS4,"max":27},
-    "panic":{"name":"مقياس الهلع (PDSS-SR مبسّط)","q":PANIC7,"ans":ANS5,"max":28},
+# ========== ضبط الأسعار ==========
+PRICES: Dict[str, Dict[str, int]] = {
+    "PHQ-9 — الاكتئاب": {"test": 25, "assessment": 80},
+    "GAD-7 — القلق": {"test": 25, "assessment": 80},
+    "Mini-SPIN — الرهاب الاجتماعي": {"test": 25, "assessment": 80},
+    "فحص نوبات الهلع (2 أسئلة)": {"test": 20, "assessment": 70},
+    "PC-PTSD-5 — فحص ما بعد الصدمة": {"test": 30, "assessment": 90},
+    "TIPI — الخمسة الكبار (10 بنود)": {"test": 25, "assessment": 70},
 }
-SESS = {}  # {uid: {"key":, "i":, "score":}}
+CURRENCY = "SAR"
 
-def tests_menu(cid):
-    rows = [
-        [{"text":"اختبار القلق (GAD-7)", "callback_data":"t:g7"}],
-        [{"text":"اختبار الاكتئاب (PHQ-9)", "callback_data":"t:phq"}],
-        [{"text":"مقياس الهلع (PDSS-SR)", "callback_data":"t:panic"}],
-    ]
-    send(cid, "اختر اختبارًا:", inline(rows))
+# ========== أدوات مساعدة ==========
+AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
+EN_DIGITS = "0123456789"
+TRANS = str.maketrans(AR_DIGITS, EN_DIGITS)
 
-def start_test(cid, uid, key):
-    SESS[uid] = {"key":key, "i":0, "score":0}
-    send(cid, f"سنبدأ: <b>{TESTS[key]['name']}</b>\nأجب بحسب آخر أسبوعين.", menu_kb())
-    ask_next(cid, uid)
+def normalize_num(s: str) -> str:
+    return s.strip().translate(TRANS)
 
-def ask_next(cid, uid):
-    st = SESS.get(uid); 
-    if not st: return
-    key, i = st["key"], st["i"]; qs = TESTS[key]["q"]; ans = TESTS[key]["ans"]
-    if i >= len(qs):
-        score = st["score"]; total = TESTS[key]["max"]
-        send(cid, f"النتيجة: <b>{score}</b> من {total}\n{interpret(key,score)}", menu_kb())
-        SESS.pop(uid, None); return
-    rows,row=[],[]
-    for idx,(label,_) in enumerate(ans):
-        row.append({"text":label,"callback_data":f"a{idx}"})
-        if (ans is ANS4 and len(row)==2) or (ans is ANS5 and len(row)==3):
-            rows.append(row); row=[]
-    if row: rows.append(row)
-    send(cid, f"س{ i+1 }: {qs[i]}", inline(rows))
+def to_int(s: str) -> Optional[int]:
+    try:
+        return int(normalize_num(s))
+    except Exception:
+        return None
 
-def record_answer(cid, uid, idx):
-    st = SESS.get(uid); 
-    if not st: return
-    key = st["key"]; st["score"] += TESTS[key]["ans"][idx][1]; st["i"] += 1
-    ask_next(cid, uid)
+def yn(s: str) -> Optional[bool]:
+    t = s.strip().lower()
+    mapping = {"نعم": True, "ايه": True, "ايوه": True, "yes": True, "y": True, "ا": True,
+               "لا": False, "no": False, "n": False}
+    return mapping.get(t)
 
-def interpret(key, score):
-    if key=="g7":
-        lvl = "قلق ضئيل" if score<=4 else ("قلق خفيف" if score<=9 else ("قلق متوسط" if score<=14 else "قلق شديد"))
-        return f"<b>{lvl}</b> — ابدأ ببطاقات الاسترخاء والتنشيط، ونظّم النوم."
-    if key=="phq":
-        if score<=4: lvl="ضئيل"
-        elif score<=9: lvl="خفيف"
-        elif score<=14: lvl="متوسط"
-        elif score<=19: lvl="متوسط إلى شديد"
-        else: lvl="شديد"
-        return f"<b>اكتئاب {lvl}</b> — فعّل التنشيط السلوكي والدعم الاجتماعي، واستشر مختصًا عند الشدة."
-    if key=="panic":
-        if score<=7: lvl="خفيف"
-        elif score<=14: lvl="متوسط"
-        elif score<=21: lvl="متوسط إلى شديد"
-        else: lvl="شديد"
-        return f"<b>هلع {lvl}</b> — تنفّس ببطء، خفّف سلوكيات الأمان، وخطّة تعرّض تدريجي."
-    return "تم."
+async def send_long(chat, text, kb=None):
+    chunk = 3500
+    for i in range(0, len(text), chunk):
+        await chat.send_message(text[i:i+chunk], reply_markup=kb if i+chunk >= len(text) else None)
 
-# -------- AI Chat (robust with fallback) --------
-AI_SESS = {}  # {uid: {"mode":"ai"|"manual","msgs":[...]}}
-SYSTEM_PROMPT = (
-    "أنت «عربي سايكو» مساعد نفسي تعليمي بالعربية. قدّم دعمًا عمليًا وتقنيات CBT "
-    "بخطوات قصيرة. لا تشخّص طبيًا ولا تقدّم أدوية. عند مؤشرات خطر وجّه لطلب مساعدة فورية."
+# ========== لوحات ==========
+TOP_KB = ReplyKeyboardMarkup(
+    [
+        ["عربي سايكو 🧠"],
+        ["العلاج السلوكي المعرفي (CBT) 💊", "الاختبارات النفسية 📝"],
+        ["اضطرابات الشخصية 🧩", "التسعيرة 💳"]
+    ],
+    resize_keyboard=True
+)
+CBT_KB = ReplyKeyboardMarkup(
+    [
+        ["ما هو CBT؟", "أخطاء التفكير"],
+        ["سجل الأفكار (تمرين)", "التعرّض التدريجي (قلق/هلع)"],
+        ["التنشيط السلوكي (مزاج)", "الاسترخاء والتنفس"],
+        ["اليقظة الذهنية", "حل المشكلات"],
+        ["بروتوكول النوم", "◀️ رجوع"]
+    ],
+    resize_keyboard=True
+)
+TESTS_KB = ReplyKeyboardMarkup(
+    [
+        ["GAD-7 قلق", "PHQ-9 اكتئاب"],
+        ["Mini-SPIN رهاب اجتماعي", "فحص نوبات الهلع"],
+        ["PC-PTSD-5 ما بعد الصدمة", "اختبار الشخصية (TIPI)"],
+        ["◀️ رجوع"]
+    ],
+    resize_keyboard=True
+)
+AI_CHAT_KB = ReplyKeyboardMarkup(
+    [["◀️ إنهاء جلسة عربي سايكو"]], resize_keyboard=True
 )
 
-def ai_headers(): return {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type":"application/json"}
+# ========== الحالات ==========
+MENU, CBT_MENU, TESTS_MENU, PD_MENU, PRICING = range(5)
+THOUGHT_SITU, THOUGHT_EMO, THOUGHT_AUTO, THOUGHT_FOR, THOUGHT_AGAINST, THOUGHT_ALTERN, THOUGHT_RERATE = range(10,17)
+EXPO_WAIT_RATING, EXPO_FLOW = range(20,22)
+SURVEY_ACTIVE = 30
+PANIC_Q = 40
+PTSD_Q = 50
+AI_CHAT = 60
 
-def ai_call(messages, max_tokens=150):
-    url = AI_BASE_URL + "/v1/chat/completions"
-    body = {"model": AI_MODEL, "messages": messages, "temperature": 0.4, "max_tokens": max_tokens}
-    r = requests.post(url, headers=ai_headers(), json=body, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"AI {r.status_code}: {r.text[:200]}")
-    return r.json()["choices"][0]["message"]["content"].strip()
-
-def manual_reply(text):
-    t = norm(text)
-    if any(k in t for k in ["نوم","ارق","سهر"]):
-        return ("خطة نوم:\n• ثبّت الاستيقاظ يوميًا\n• قلّل الشاشات بعد العشاء\n• طقوس تهدئة 30–45د\n• سرير=نوم فقط\n"
-                "• إن لم تنم خلال 20د اخرج لنشاط هادئ وارجع.")
-    if any(k in t for k in ["حزن","مزاج","اكتئاب"]):
-        return ("تنشيط سلوكي اليوم:\n• نشاط ممتع صغير + نافع صغير\n• قاعدة 5 دقائق\n• قيّم المزاج قبل/بعد.")
-    if any(k in t for k in ["قلق","توتر","هلع"]):
-        return ("تهدئة القلق:\n• تنفّس 4–7–8 ×6\n• لاحظ الفكرة واسمها ثم ابحث عن بديل متوازن\n• قلّل سلوكيات الأمان وابدأ تعرّضًا تدريجيًا آمنًا.")
-    return ("شكرًا لمشاركتك. اكتب الموقف والفكرة التلقائية وسنشتغل على صياغة متوازنة وخطوة سلوكية صغيرة.")
-
-def ai_start(cid, uid):
-    intro = (
-        "مرحبًا 👋 أنا <b>عربي سايكو</b>.\n"
-        "برنامج علاجي نفسي عملي بالذكاء الاصطناعي، تحت إشراف أخصائي نفسي مرخّص.\n\n"
-        "أقدّم بطاقات CBT، واختبارات قياسية، ومحادثة داعمة.\n"
-        f"{'وسيلة تواصل: <code>'+CONTACT_PHONE+'</code>\n' if CONTACT_PHONE else ''}"
-        "تفضل وابدأ شكواك الآن ✍️"
+# ========== نصوص CBT ==========
+CBT_TXT = {
+    "about": (
+        "🔹 **ما هو CBT؟**\n"
+        "العلاج السلوكي المعرفي يربط بين **الفكر ↔️ الشعور ↔️ السلوك**.\n"
+        "نعدّل الأفكار غير المفيدة، ونجرب سلوكيات بنّاءة، فتتحسن المشاعر تدريجيًا.\n"
+        "النجاح يحتاج **خطوات صغيرة + تكرار + قياس** (قبل/بعد 0–10)."
+    ),
+    "distortions": (
+        "🧠 **أخطاء التفكير الشائعة**\n"
+        "• التعميم المفرط — «دائمًا أفشل»\n"
+        "• التهويل/تقليل الإيجابي — «كارثة!»\n"
+        "• قراءة الأفكار — «يظنونني…»\n"
+        "• التنبؤ السلبي — «أكيد بيصير أسوأ»\n"
+        "• الأبيض/الأسود — «يا كامل يا صفر»\n"
+        "• يجب/لازم — «لازم ما أغلط»\n"
+        "👉 اسأل: *ما الدليل؟ ما البديل المتوازن؟ ماذا أنصح صديقًا في موقفي؟*"
+    ),
+    "relax": (
+        "🌬️ **الاسترخاء والتنفس 4-7-8**\n"
+        "ازفر، ثم: شهيق 4، حبس 7، زفير 8 (×4 مرات).\n"
+        "🪢 شد/إرخاء: شدّ العضلة 5 ثوانٍ ثم أرخِ 10 (من القدم للرأس)."
+    ),
+    "mind": (
+        "🧘 **اليقظة الذهنية**\n"
+        "تمرين 5-4-3-2-1: 5 ترى، 4 تلمس، 3 تسمع، 2 تشمّ، 1 تتذوق."
+    ),
+    "problem": (
+        "🧩 **حلّ المشكلات**\n"
+        "1) تعريف دقيق.\n2) بدائل بلا حكم.\n3) مزايا/عيوب.\n4) خطة متى/أين/كيف.\n5) جرّب ثم قيّم."
+    ),
+    "sleep": (
+        "🛌 **بروتوكول النوم**\n"
+        "استيقاظ ثابت، السرير للنوم فقط، لا تبقَ >20 دقيقة مستيقظًا بالسرير، خفّف كافيين، أوقف الشاشات ساعة قبل النوم."
     )
-    send(cid, intro, menu_kb())
-    AI_SESS[uid] = {"mode": "ai" if ai_ready() else "manual", "msgs": [{"role":"system","content":SYSTEM_PROMPT}] if ai_ready() else []}
-    if ADMIN_CHAT_ID:
-        try: tg("sendMessage", {"chat_id": int(ADMIN_CHAT_ID), "text": f"بدأ المستخدم {uid} جلسة عربي سايكو."})
-        except: pass
+}
 
-def ai_handle(cid, uid, user_text):
-    if crisis_guard(user_text):
-        send(cid, "سلامتك أولًا. إن راودتك أفكار لإيذاء نفسك اتصل بالطوارئ فورًا وتواصل مع شخص موثوق.", menu_kb()); return
-    sess = AI_SESS.get(uid)
-    if not sess:
-        ai_start(cid, uid); sess = AI_SESS.get(uid)
-    if sess["mode"]=="manual":
-        send(cid, manual_reply(user_text), menu_kb()); return
-    msgs = (sess["msgs"] or [])[-14:]
-    msgs.append({"role":"user","content": user_text})
-    for mt in (150, 100, 70):
-        try:
-            reply = ai_call([*msgs], max_tokens=mt)
-            msgs.append({"role":"assistant","content": reply})
-            AI_SESS[uid]["msgs"] = msgs[-16:]
-            send(cid, reply, menu_kb()); return
-        except Exception as e:
-            log.warning("AI error: %s", e)
-            continue
-    send(cid, manual_reply(user_text) + "\n\n(تم استخدام وضع بديل مؤقتًا.)", menu_kb())
+# ========== تمارين CBT التفاعلية ==========
+@dataclass
+class ThoughtRecord:
+    situation: str = ""
+    emotion: str = ""
+    auto: str = ""
+    evidence_for: str = ""
+    evidence_against: str = ""
+    alternative: str = ""
+    start_rating: Optional[int] = None
+    end_rating: Optional[int] = None
 
-def ai_end(cid, uid):
-    AI_SESS.pop(uid, None)
-    send(cid, "تم إنهاء الجلسة ✅", menu_kb())
+@dataclass
+class ExposureState:
+    suds: Optional[int] = None
+    plan: Optional[str] = None
 
-# -------- Routes --------
-@app.get("/")
-def home():
-    return jsonify({"app":"Arabi Psycho","public_url":RENDER_EXTERNAL_URL,
-                    "webhook":f"/webhook/{WEBHOOK_SECRET[:3]}*****","ai_ready":ai_ready()})
+# ========== محرك الاستبيانات ==========
+@dataclass
+class Survey:
+    id: str
+    title: str
+    items: List[str]
+    scale_text: str
+    min_val: int
+    max_val: int
+    reverse: List[int] = field(default_factory=list)
+    answers: List[int] = field(default_factory=list)
 
-@app.get("/setwebhook")
-def set_hook():
-    if not RENDER_EXTERNAL_URL: return {"ok":False,"error":"RENDER_EXTERNAL_URL not set"}, 400
-    url = f"{RENDER_EXTERNAL_URL}/webhook/{WEBHOOK_SECRET}"
-    res = requests.post(f"{BOT_API}/setWebhook", json={"url": url}, timeout=15)
-    return res.json(), res.status_code
+GAD7_ITEMS = [
+    "الشعور بالتوتر أو القلق أو العصبية",
+    "عدم القدرة على التوقف عن القلق أو التحكم فيه",
+    "القلق الزائد حيال أمور مختلفة",
+    "صعوبة الاسترخاء",
+    "التململ أو صعوبة البقاء هادئًا",
+    "الانزعاج بسهولة أو العصبية",
+    "الخوف من أن شيئًا فظيعًا قد يحدث"
+]
+PHQ9_ITEMS = [
+    "قلة الاهتمام أو المتعة بالقيام بأي شيء",
+    "الشعور بالإحباط أو الاكتئاب أو اليأس",
+    "صعوبة النوم أو النوم الزائد",
+    "الشعور بالتعب أو قلة الطاقة",
+    "ضعف الشهية أو الإفراط في الأكل",
+    "الشعور بأنك سيئ عن نفسك أو فاشل",
+    "صعوبة التركيز على الأشياء",
+    "الحركة/الكلام ببطء شديد أو توتر زائد",
+    "أفكار بإيذاء النفس أو أن الموت قد يكون أفضل"
+]
+MINISPIN_ITEMS = [
+    "أتجنب المواقف الاجتماعية خوفًا من الإحراج",
+    "أقلق من أن يلاحظ الآخرون ارتباكي",
+    "أخاف من التحدث أمام الآخرين"
+]
+TIPI_ITEMS = [
+    "أنا منفتح/اجتماعي",
+    "أنا ناقد وقلّما أُظهر المودة (عكسي)",
+    "أنا منظم وموثوق",
+    "أنا أتوتر بسهولة",
+    "أنا منفتح على تجارب جديدة",
+    "أنا انطوائي/خجول (عكسي)",
+    "أنا ودود ومتعاطف",
+    "أنا مهمل/عشوائي (عكسي)",
+    "أنا هادئ وثابت انفعاليًا (عكسي)",
+    "أنا تقليدي/غير خيالي (عكسي)"
+]
+TIPI_REVERSE = [1,5,7,8,9]
+PC_PTSD5_ITEMS = [
+    "خلال الشهر الماضي: هل راودتك كوابيس أو ذكريات مزعجة لحدث صادم؟ (نعم/لا)",
+    "هل تجنّبت التفكير بالحدث أو أماكن تُذكّرك به؟ (نعم/لا)",
+    "هل كنت دائم اليقظة أو سريع الفزع أو على أعصابك؟ (نعم/لا)",
+    "هل شعرت بالخدر/الانفصال عن الناس أو الأنشطة؟ (نعم/لا)",
+    "هل شعرت بالذنب أو اللوم بسبب الحدث؟ (نعم/لا)"
+]
 
-@app.post(f"/webhook/{WEBHOOK_SECRET}")
-def webhook():
-    upd = request.get_json(force=True, silent=True) or {}
+TEST_BANK: Dict[str, Dict[str, Any]] = {
+    "gad7": {"title": "GAD-7 — القلق",
+             "survey": Survey("gad7", "GAD-7 — القلق", GAD7_ITEMS,
+                              "0=أبدًا، 1=عدة أيام، 2=أكثر من نصف الأيام، 3=تقريبًا كل يوم", 0, 3)},
+    "phq9": {"title": "PHQ-9 — الاكتئاب",
+             "survey": Survey("phq9", "PHQ-9 — الاكتئاب", PHQ9_ITEMS,
+                              "0=أبدًا، 1=عدة أيام، 2=أكثر من نصف الأيام، 3=تقريبًا كل يوم", 0, 3)},
+    "minispin": {"title": "Mini-SPIN — الرهاب الاجتماعي",
+                 "survey": Survey("minispin", "Mini-SPIN — الرهاب الاجتماعي", MINISPIN_ITEMS,
+                                  "0=أبدًا، 1=قليلًا، 2=إلى حد ما، 3=كثيرًا، 4=جداً", 0, 4)},
+    "tipi": {"title": "TIPI — الخمسة الكبار (10 بنود)",
+             "survey": Survey("tipi", "TIPI — الشخصية", TIPI_ITEMS,
+                              "قيّم 1–7 (1=لا تنطبق…7=تنطبق تمامًا)", 1, 7, reverse=TIPI_REVERSE)},
+}
 
-    # Callbacks
-    if "callback_query" in upd:
-        cq = upd["callback_query"]; data = cq.get("data","")
-        cid = cq["message"]["chat"]["id"]; uid = cq["from"]["id"]
-        if data.startswith("t:"):
-            key = data.split(":",1)[1]
-            if key in TESTS: start_test(cid, uid, key)
-            else: send(cid, "اختبار غير معروف.", menu_kb())
-            return "ok", 200
-        if data.startswith("a"):
-            try: record_answer(cid, uid, int(data[1:]))
-            except: send(cid, "إجابة غير صالحة.", menu_kb())
-            return "ok", 200
-        if data.startswith("cbt:"):
-            cbt_send(cid, data.split(":",1)[1]); return "ok", 200
-        return "ok", 200
+# ========== اضطرابات الشخصية ==========
+PD_TEXT = (
+    "🧩 **اضطرابات الشخصية — DSM-5 (العناقيد)**\n"
+    "**A (غريبة/شاذة):** الزورية، الفُصامية/الانعزالية، الفُصامية الشكل.\n"
+    "**B (درامية/اندفاعية):** المعادية للمجتمع، الحدّية، الهستيرية، النرجسية.\n"
+    "**C (قلِقة/خائفة):** التجنبية، الاتكالية، الوسواسية القهرية للشخصية.\n\n"
+    "ℹ️ التثقيف فقط—not تشخيص. اطلب تقييمًا عند المعاناة أو تأثير واضح على الحياة."
+)
 
-    # Messages
-    msg = upd.get("message") or upd.get("edited_message") or {}
-    if not msg: return "ok", 200
-    cid = msg["chat"]["id"]; text = (msg.get("text") or "").strip(); uid = msg.get("from",{}).get("id"); n = norm(text)
+# ========== ذكاء اصطناعي: عميل ودالة توليد ==========
+AI_SYSTEM_PROMPT = (
+    "أنت «عربي سايكو»، مساعد نفسي عربي داعم يعتمد مبادئ CBT.\n"
+    "- تحدث بلطف ووضوح وبالعربية الفصحى المبسطة.\n"
+    "- ساعد في تنظيم الأفكار، اقتراح تمارين قصيرة، وتطبيع المشاعر.\n"
+    "- لا تقدم تشخيصات رسمية أو أدوية. عند وجود خطر (إيذاء النفس/الآخرين)، انصح بطلب مساعدة فورية.\n"
+    "- كن عمليًا: خطوات قابلة للتطبيق، أسئلة استكشافية، تلخيص قصير في النهاية."
+)
 
-    # Commands / reset
-    if is_cmd(text,"start") or is_cmd(text,"menu"):
-        AI_SESS.pop(uid, None); SESS.pop(uid, None)
-        send(cid, INTRO, menu_kb()); return "ok", 200
-    if is_cmd(text,"reset"):
-        AI_SESS.pop(uid, None); SESS.pop(uid, None)
-        send(cid, "تمت إعادة الضبط. اختر من القائمة.", menu_kb()); return "ok", 200
-    if n in ("انهاء","إنهاء","end","stop"):
-        ai_end(cid, uid); return "ok", 200
+def _openai_client():
+    if not (_HAS_OPENAI and OPENAI_API_KEY):
+        return None
+    try:
+        return OpenAI(api_key=OPENAI_API_KEY)
+    except Exception:
+        return None
 
-    # Main buttons
-    if text == "🧠 عربي سايكو": ai_start(cid, uid); return "ok", 200
-    if text == "💊 العلاج السلوكي المعرفي (CBT)" or is_cmd(text,"cbt"): cbt_menu(cid); return "ok", 200
-    if text == "📝 الاختبارات النفسية" or is_cmd(text,"tests"): tests_menu(cid); return "ok", 200
+def _openai_complete(messages: List[Dict[str, str]]) -> str:
+    """
+    يستدعي OpenAI تزامنيًا (سنشغله بخيط عبر asyncio.to_thread).
+    """
+    client = _openai_client()
+    if client is None:
+        return ("(خدمة الذكاء الاصطناعي غير مفعّلة حاليًا: لم يتم ضبط OPENAI_API_KEY أو مكتبة openai غير مثبتة)\n"
+                "ثبّت الحزمة وشغّل المفتاح لتفعيل جلسة عربي سايكو.")
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            temperature=0.4,
+            max_tokens=600,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"(تعذّر توليد الرد: {e})"
 
-    # During sessions
-    if uid in SESS:
-        send(cid, "من فضلك أجب بالضغط على الأزرار المعروضة للاختبار.", menu_kb()); return "ok", 200
-    if uid in AI_SESS:
-        ai_handle(cid, uid, text); return "ok", 200
+async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    # نحافظ على تاريخ قصير لكل مستخدم
+    hist: List[Dict[str, str]] = context.user_data.get("ai_history", [])
+    # قصّ إلى آخر 10 تبادلات
+    hist = hist[-20:]
+    convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [{"role": "user", "content": user_text}]
+    # تشغيل النداء في خيط منفصل حتى لا نحجب الحلقة
+    reply = await asyncio.to_thread(_openai_complete, convo)
+    # حدّث السجل
+    hist += [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
+    context.user_data["ai_history"] = hist[-20:]
+    return reply
 
-    # Default
-    send(cid, "اختر من القائمة أو اكتب /start.", menu_kb()); return "ok", 200
+# ========== /start ==========
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message(
+        "مرحبًا! أنا **عربي سايكو**.\nاختر من القائمة أو اكتب /start.",
+        reply_markup=TOP_KB
+    )
+    return MENU
 
-# -------- Local run --------
+# ========== المستوى الأعلى ==========
+async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t.startswith("عربي سايكو"):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("ابدأ جلسة عربي سايكو 🤖", callback_data="start_ai")],
+            [InlineKeyboardButton("تواصل معي", url="https://t.me/your_contact")],
+        ])
+        await update.message.reply_text(
+            "أنا مساعد نفسي مدعوم بالذكاء الاصطناعي.\n"
+            "ابدأ جلستك أو تواصل مع الأخصائي.\n"
+            "تنبيه: لست بديلاً للطوارئ الطبية.",
+            reply_markup=kb
+        )
+        return MENU
+
+    if t.startswith("العلاج السلوكي"):
+        await update.message.reply_text("اختر وحدة CBT:", reply_markup=CBT_KB)
+        return CBT_MENU
+
+    if t.startswith("الاختبارات"):
+        await update.message.reply_text("اختر اختبارًا:", reply_markup=TESTS_KB)
+        return TESTS_MENU
+
+    if t.startswith("اضطرابات الشخصية"):
+        await send_long(update.effective_chat, PD_TEXT)
+        await update.message.reply_text("للدعم العملي اختر CBT أو ابدأ جلسة عربي سايكو.", reply_markup=TOP_KB)
+        return MENU
+
+    if t.startswith("التسعيرة"):
+        lines = ["💳 **التسعيرة** (قابلة للتعديل):"]
+        for name, p in PRICES.items():
+            lines.append(f"• {name}: اختبار {p['test']} {CURRENCY} / فحص {p['assessment']} {CURRENCY}")
+        await update.message.reply_text("\n".join(lines), reply_markup=TOP_KB)
+        return MENU
+
+    await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
+    return MENU
+
+# ========== بدء/إدارة جلسة AI ==========
+async def start_ai_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # تهيئة سجل الجلسة
+    context.user_data["ai_history"] = []
+    await q.message.chat.send_message(
+        "بدأت جلسة **عربي سايكو**.\n"
+        "اكتب شكواك أو ما يقلقك الآن. لانهاء الجلسة اضغط «◀️ إنهاء جلسة عربي سايكو» أو اكتب /خروج.",
+        reply_markup=AI_CHAT_KB
+    )
+    return AI_CHAT
+
+async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
+        await update.message.reply_text("انتهت جلسة عربي سايكو. رجوع للقائمة.", reply_markup=TOP_KB)
+        return MENU
+    # عرض حالة الكتابة
+    await update.effective_chat.send_chat_action(action="typing")
+    reply = await ai_respond(text, context)
+    await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
+    return AI_CHAT
+
+# ========== قائمة CBT ==========
+async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "◀️ رجوع":
+        await update.message.reply_text("رجعناك للقائمة الرئيسية.", reply_markup=TOP_KB)
+        return MENU
+    if t == "ما هو CBT؟":
+        await send_long(update.effective_chat, CBT_TXT["about"], kb=CBT_KB);  return CBT_MENU
+    if t == "أخطاء التفكير":
+        await send_long(update.effective_chat, CBT_TXT["distortions"], kb=CBT_KB);  return CBT_MENU
+    if t == "الاسترخاء والتنفس":
+        await update.message.reply_text(CBT_TXT["relax"], reply_markup=CBT_KB);  return CBT_MENU
+    if t == "اليقظة الذهنية":
+        await update.message.reply_text(CBT_TXT["mind"], reply_markup=CBT_KB);  return CBT_MENU
+    if t == "حل المشكلات":
+        await update.message.reply_text(CBT_TXT["problem"], reply_markup=CBT_KB);  return CBT_MENU
+    if t == "بروتوكول النوم":
+        await update.message.reply_text(CBT_TXT["sleep"], reply_markup=CBT_KB);  return CBT_MENU
+
+    if t == "سجل الأفكار (تمرين)":
+        context.user_data["tr"] = ThoughtRecord()
+        await update.message.reply_text("📝 اكتب **الموقف** باختصار (متى/أين/مع من؟).", reply_markup=ReplyKeyboardRemove())
+        return THOUGHT_SITU
+
+    if t == "التعرّض التدريجي (قلق/هلع)":
+        context.user_data["expo"] = ExposureState()
+        await update.message.reply_text("أرسل درجة قلقك الحالية 0–10 (تُقبل الأرقام العربية). مثال: ٣ أو 3.",
+                                       reply_markup=ReplyKeyboardRemove())
+        return EXPO_WAIT_RATING
+
+    if t == "التنشيط السلوكي (مزاج)":
+        context.user_data["ba_wait"] = True
+        await update.message.reply_text(
+            "📈 اختر 3 أنشطة صغيرة اليوم (10–20 دقيقة):\n"
+            "• حركة خفيفة (مشي)\n• تواصل (رسالة لصديق)\n"
+            "• رعاية ذاتية (استحمام/ترتيب)\n"
+            "— أرسلها مفصولة بفواصل/أسطر وسأثبت خطة.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return CBT_MENU
+
+    await update.message.reply_text("اختر وحدة من القائمة.", reply_markup=CBT_KB)
+    return CBT_MENU
+
+async def cbt_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("ba_wait"):
+        context.user_data["ba_wait"] = False
+        parts = [s.strip() for s in re.split(r"[,\n،]+", update.message.text) if s.strip()]
+        plan = "خطة اليوم:\n• " + "\n• ".join(parts[:3] or [update.message.text.strip()])
+        await update.message.reply_text(plan + "\n\nقيّم مزاجك قبل/بعد من 0–10.")
+        await update.message.reply_text("عد لقائمة CBT:", reply_markup=CBT_KB)
+        return CBT_MENU
+    return CBT_MENU
+
+# ===== سجل الأفكار — تسلسل =====
+async def tr_situ(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.situation = update.message.text.strip()
+    await update.message.reply_text("ما الشعور الأساسي الآن؟ وقيّمه 0–10 (مثال: قلق 7/10).")
+    return THOUGHT_EMO
+
+async def tr_emo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.emotion = update.message.text.strip()
+    m = re.search(r"(\d+)", normalize_num(tr.emotion))
+    tr.start_rating = int(m.group(1)) if m else None
+    await update.message.reply_text("ما **الفكرة التلقائية** التي خطرت ببالك؟")
+    return THOUGHT_AUTO
+
+async def tr_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.auto = update.message.text.strip()
+    await update.message.reply_text("اكتب **أدلة تؤيد** الفكرة.")
+    return THOUGHT_FOR
+
+async def tr_for(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.evidence_for = update.message.text.strip()
+    await update.message.reply_text("اكتب **أدلة تنفي** الفكرة.")
+    return THOUGHT_AGAINST
+
+async def tr_against(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.evidence_against = update.message.text.strip()
+    await update.message.reply_text("اكتب **فكرة بديلة متوازنة**.")
+    return THOUGHT_ALTERN
+
+async def tr_altern(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    tr.alternative = update.message.text.strip()
+    await update.message.reply_text("أعد تقييم الشعور الآن 0–10.")
+    return THOUGHT_RERATE
+
+async def tr_rerate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tr: ThoughtRecord = context.user_data["tr"]
+    n = to_int(update.message.text)
+    tr.end_rating = n if n is not None else None
+    text = (
+        "✅ **ملخص سجل الأفكار**\n"
+        f"• الموقف: {tr.situation}\n"
+        f"• الشعور/التقييم قبل: {tr.emotion}\n"
+        f"• الفكرة التلقائية: {tr.auto}\n"
+        f"• أدلة تؤيد: {tr.evidence_for}\n"
+        f"• أدلة تنفي: {tr.evidence_against}\n"
+        f"• فكرة بديلة: {tr.alternative}\n"
+        f"• التقييم بعد: {tr.end_rating if tr.end_rating is not None else '—'}\n"
+        "استمر بالتدريب يوميًا."
+    )
+    await send_long(update.effective_chat, text)
+    await update.message.reply_text("اختر من قائمة CBT:", reply_markup=CBT_KB)
+    return CBT_MENU
+
+# ===== التعرض =====
+async def expo_receive_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    n = to_int(update.message.text)
+    if n is None or not (0 <= n <= 10):
+        await update.message.reply_text("أرسل رقمًا من 0 إلى 10.")
+        return EXPO_WAIT_RATING
+    st: ExposureState = context.user_data["expo"]
+    st.suds = n
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("اقترح مواقف 3–4/10", callback_data="expo_suggest")],
+        [InlineKeyboardButton("شرح سريع", callback_data="expo_help")],
+    ])
+    txt = (f"درجتك الحالية = {n}/10.\n"
+           "اكتب موقفًا مناسبًا لدرجة 3–4/10 (مثال: الوقوف بدكان مزدحم 5 دقائق)، أو استخدم الأزرار.")
+    await update.message.reply_text(txt, reply_markup=kb)
+    return EXPO_FLOW
+
+async def expo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.data == "expo_suggest":
+        s = "أمثلة 3–4/10:\n- ركوب المصعد لطابقين\n- الانتظار في صف قصير\n- الجلوس قرب المخرج في مقهى 10 دقائق\n\nاكتب موقفك الآن."
+        await q.edit_message_text(s)
+        return EXPO_FLOW
+    if q.data == "expo_help":
+        await q.edit_message_text("القاعدة: تعرّض آمن + منع الطمأنة + البقاء حتى يهبط القلق للنصف. ثم كرر واصعد درجة.")
+        return EXPO_FLOW
+    return EXPO_FLOW
+
+async def expo_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st: ExposureState = context.user_data["expo"]
+    st.plan = update.message.text.strip()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ ابدأ الآن", callback_data="expo_start")],
+        [InlineKeyboardButton("تم — قيّم الدرجة", callback_data="expo_rate")]
+    ])
+    await update.message.reply_text(
+        f"خطة التعرض:\n• {st.plan}\nابدأ بدون طمأنة/هروب وابقَ حتى تهبط الدرجة ≥ النصف.",
+        reply_markup=kb
+    )
+    return EXPO_FLOW
+
+async def expo_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.data == "expo_start":
+        await q.edit_message_text("بالتوفيق! عند الانتهاء أرسل الدرجة الجديدة (0–10).")
+        return EXPO_WAIT_RATING
+    if q.data == "expo_rate":
+        await q.edit_message_text("أرسل الدرجة الجديدة (0–10).")
+        return EXPO_WAIT_RATING
+    return EXPO_FLOW
+
+# ========== الاختبارات ==========
+@dataclass
+class PanicState:
+    i: int = 0
+    ans: List[bool] = field(default_factory=list)
+
+def survey_prompt(s: Survey, idx: int) -> str:
+    return f"({idx+1}/{len(s.items)}) {s.items[idx]}\n{ s.scale_text }"
+
+async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "◀️ رجوع":
+        await update.message.reply_text("رجعناك للقائمة الرئيسية.", reply_markup=TOP_KB)
+        return MENU
+
+    key_map = {
+        "GAD-7 قلق": "gad7",
+        "PHQ-9 اكتئاب": "phq9",
+        "Mini-SPIN رهاب اجتماعي": "minispin",
+        "اختبار الشخصية (TIPI)": "tipi",
+        "فحص نوبات الهلع": "panic",
+        "PC-PTSD-5 ما بعد الصدمة": "pcptsd5",
+    }
+    if t not in key_map:
+        await update.message.reply_text("اختر اختبارًا من الأزرار:", reply_markup=TESTS_KB)
+        return TESTS_MENU
+
+    kid = key_map[t]
+
+    if kid == "panic":
+        context.user_data["panic"] = PanicState()
+        await update.message.reply_text("خلال آخر 4 أسابيع: هل حدثت لديك **نوبات هلع مفاجئة**؟ (نعم/لا)",
+                                        reply_markup=ReplyKeyboardRemove())
+        return PANIC_Q
+
+    if kid == "pcptsd5":
+        context.user_data["ptsd_i"] = 0
+        context.user_data["ptsd_yes"] = 0
+        context.user_data["ptsd_qs"] = PC_PTSD5_ITEMS
+        await update.message.reply_text(PC_PTSD5_ITEMS[0], reply_markup=ReplyKeyboardRemove())
+        return PTSD_Q
+
+    base = TEST_BANK[kid]["survey"]
+    s = Survey(base.id, base.title, list(base.items), base.scale_text, base.min_val, base.max_val, list(base.reverse))
+    context.user_data["survey"] = s
+    context.user_data["survey_idx"] = 0
+    await update.message.reply_text(f"بدء **{s.title}**.\n{survey_prompt(s,0)}", reply_markup=ReplyKeyboardRemove())
+    return SURVEY_ACTIVE
+
+async def panic_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st: PanicState = context.user_data["panic"]
+    ans = yn(update.message.text)
+    if ans is None:
+        await update.message.reply_text("أجب بـ نعم/لا.")
+        return PANIC_Q
+    st.ans.append(ans); st.i += 1
+    if st.i == 1:
+        await update.message.reply_text("هل تخاف من حدوث نوبة أخرى أو تتجنب أماكن خوفًا من ذلك؟ (نعم/لا)")
+        return PANIC_Q
+    # حساب النتيجة
+    a1, a2 = st.ans
+    result = "سلبي (لا مؤشر قوي لنوبات هلع حاليًا)." if not (a1 and a2) else "إيجابي — قد تكون هناك نوبات هلع/قلق متوقعة."
+    note = "إن أثّرت الأعراض على حياتك أو وُجد ألم صدري/ضيق شديد، راجع مختصًا."
+    await update.message.reply_text(f"**نتيجة فحص الهلع:** {result}\n{note}", reply_markup=TESTS_KB)
+    return TESTS_MENU
+
+async def ptsd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ans = yn(update.message.text)
+    if ans is None:
+        await update.message.reply_text("أجب بـ نعم/لا.")
+        return PTSD_Q
+    if ans: context.user_data["ptsd_yes"] += 1
+    context.user_data["ptsd_i"] += 1
+    i = context.user_data["ptsd_i"]; qs = context.user_data["ptsd_qs"]
+    if i < len(qs):
+        await update.message.reply_text(qs[i])
+        return PTSD_Q
+    yes = context.user_data["ptsd_yes"]
+    result = "إيجابي (≥3 بنود نعم) — يُوصى بالتقييم." if yes >= 3 else "سلبي — أقل من حد الإشارة."
+    await update.message.reply_text(f"**نتيجة PC-PTSD-5:** {yes}/5 — {result}", reply_markup=TESTS_KB)
+    return TESTS_MENU
+
+async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    s: Survey = context.user_data["survey"]; idx = context.user_data["survey_idx"]
+    n = to_int(update.message.text)
+    if n is None or not (s.min_val <= n <= s.max_val):
+        await update.message.reply_text(f"أدخل رقمًا بين {s.min_val} و{s.max_val}.")
+        return SURVEY_ACTIVE
+
+    s.answers.append(n); idx += 1
+    if idx >= len(s.items):
+        if s.id == "gad7":
+            total = sum(s.answers)
+            level = "خفيف جدًا/طبيعي" if total <= 4 else "قلق خفيف" if total <= 9 else "قلق متوسط" if total <= 14 else "قلق شديد"
+            msg = f"**نتيجة GAD-7:** {total}/21 — {level}."
+            if total >= 10: msg += "\n💡 يُوصى بالتقييم المهني."
+            await update.message.reply_text(msg, reply_markup=TESTS_KB);  return TESTS_MENU
+
+        if s.id == "phq9":
+            total = sum(s.answers)
+            if total <= 4: level = "لا اكتئاب/خفيف جدًا"
+            elif total <= 9: level = "اكتئاب خفيف"
+            elif total <= 14: level = "اكتئاب متوسط"
+            elif total <= 19: level = "متوسط-شديد"
+            else: level = "شديد"
+            msg = f"**نتيجة PHQ-9:** {total}/27 — {level}."
+            if s.answers[8] and s.answers[8] > 0:
+                msg += "\n⚠️ بند الأفكار المؤذية > 0 — اطلب مساعدة فورية عند أي خطورة."
+            await update.message.reply_text(msg, reply_markup=TESTS_KB);  return TESTS_MENU
+
+        if s.id == "minispin":
+            total = sum(s.answers)
+            msg = f"**نتيجة Mini-SPIN:** {total}/12."
+            msg += " (مؤشر رهاب اجتماعي محتمل)" if total >= 6 else " (أقل من حدّ الإشارة)"
+            await update.message.reply_text(msg, reply_markup=TESTS_KB);  return TESTS_MENU
+
+        if s.id == "tipi":
+            vals = s.answers[:]
+            for i in s.reverse: vals[i] = 8 - vals[i]  # عكس البنود (مدى 1..7)
+            extr = (vals[0] + vals[5]) / 2
+            agre = (vals[1] + vals[6]) / 2
+            cons = (vals[2] + vals[7]) / 2
+            emot = (vals[3] + vals[8]) / 2
+            open_ = (vals[4] + vals[9]) / 2
+            def label(x): return "عالٍ" if x >= 5.5 else ("منخفض" if x <= 2.5 else "متوسط")
+            msg = (
+                "**نتيجة TIPI (1–7):**\n"
+                f"• الانبساط: {extr:.1f} ({label(extr)})\n"
+                f"• التوافق/الود: {agre:.1f} ({label(agre)})\n"
+                f"• الضمير/الانضباط: {cons:.1f} ({label(cons)})\n"
+                f"• الاستقرار الانفعالي: {emot:.1f} ({label(emot)})\n"
+                f"• الانفتاح على الخبرة: {open_:.1f} ({label(open_)})"
+            )
+            await update.message.reply_text(msg, reply_markup=TESTS_KB);  return TESTS_MENU
+
+        await update.message.reply_text("تم الحساب.", reply_markup=TESTS_KB)
+        return TESTS_MENU
+
+    context.user_data["survey_idx"] = idx
+    await update.message.reply_text(survey_prompt(s, idx))
+    return SURVEY_ACTIVE
+
+# ========== سقوط عام ==========
+async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
+    return MENU
+
+# ========== ربط كل شيء ==========
+def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("يرجى ضبط متغير البيئة BOT_TOKEN")
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
+            CBT_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
+            ],
+            THOUGHT_SITU: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
+            THOUGHT_EMO: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
+            THOUGHT_AUTO:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
+            THOUGHT_FOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
+            THOUGHT_AGAINST:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
+            THOUGHT_ALTERN:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_altern)],
+            THOUGHT_RERATE:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
+
+            EXPO_WAIT_RATING: [MessageHandler(filters.TEXT & ~filters.COMMAND, expo_receive_rating)],
+            EXPO_FLOW: [
+                CallbackQueryHandler(expo_cb, pattern="^expo_(suggest|help)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, expo_free_text),
+                CallbackQueryHandler(expo_actions, pattern="^expo_(start|rate)$"),
+            ],
+
+            TESTS_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+            SURVEY_ACTIVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+            PANIC_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
+            PTSD_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
+
+            AI_CHAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
+        },
+        fallbacks=[MessageHandler(filters.ALL, fallback)],
+        allow_reentry=True
+    )
+
+    app.add_handler(CallbackQueryHandler(start_ai_cb, pattern="^start_ai$"))
+    app.add_handler(conv)
+    app.run_polling()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
+    main()
