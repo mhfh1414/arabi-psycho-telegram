@@ -1,5 +1,5 @@
-# app.py — عربي سايكو: AI Chat + CBT + اختبارات قوية + اضطرابات الشخصية + التسعيرة (ملف واحد)
-# Python 3.10+ | python-telegram-bot v21
+# app.py — عربي سايكو: AI Chat + CBT + اختبارات + اضطرابات الشخصية + تسعيرة (PTB v21)
+# Python 3.10+
 
 import os, re, asyncio
 from dataclasses import dataclass, field
@@ -9,24 +9,29 @@ from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
 
-# ====== إعداد التوكن ومفاتيح الذكاء الاصطناعي ======
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ضع توكن تيليجرام في البيئة
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# ====== مفاتيح التشغيل (يدعم صيغ متعددة دون تغيير مفاتيحك القديمة) ======
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 
-# محاولة استيراد عميل OpenAI الحديث
+AI_API_KEY  = os.getenv("AI_API_KEY")  or os.getenv("OPENAI_API_KEY")
+AI_BASE_URL = os.getenv("AI_BASE_URL") or "https://api.openai.com/v1"  # لو OpenRouter: https://openrouter.ai/api/v1
+AI_MODEL    = os.getenv("AI_MODEL")    or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+CONTACT_URL = os.getenv("CONTACT_URL")  # مثال: https://t.me/your_username
+
+# OpenAI client
 try:
     from openai import OpenAI
     _HAS_OPENAI = True
 except Exception:
     _HAS_OPENAI = False
 
-# ========== ضبط الأسعار ==========
+# ========== التسعيرة ==========
 PRICES: Dict[str, Dict[str, int]] = {
     "PHQ-9 — الاكتئاب": {"test": 25, "assessment": 80},
     "GAD-7 — القلق": {"test": 25, "assessment": 80},
@@ -37,7 +42,7 @@ PRICES: Dict[str, Dict[str, int]] = {
 }
 CURRENCY = "SAR"
 
-# ========== أدوات مساعدة ==========
+# ========== أدوات ==========
 AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
 EN_DIGITS = "0123456789"
 TRANS = str.maketrans(AR_DIGITS, EN_DIGITS)
@@ -86,6 +91,7 @@ TESTS_KB = ReplyKeyboardMarkup(
         ["GAD-7 قلق", "PHQ-9 اكتئاب"],
         ["Mini-SPIN رهاب اجتماعي", "فحص نوبات الهلع"],
         ["PC-PTSD-5 ما بعد الصدمة", "اختبار الشخصية (TIPI)"],
+        ["SAPAS اضطراب شخصية", "MSI-BPD حدية"],   # ← جديد
         ["◀️ رجوع"]
     ],
     resize_keyboard=True
@@ -101,6 +107,8 @@ EXPO_WAIT_RATING, EXPO_FLOW = range(20,22)
 SURVEY_ACTIVE = 30
 PANIC_Q = 40
 PTSD_Q = 50
+SAPAS_Q = 51       # ← جديد
+MSI_Q = 52         # ← جديد
 AI_CHAT = 60
 
 # ========== نصوص CBT ==========
@@ -140,7 +148,7 @@ CBT_TXT = {
     )
 }
 
-# ========== تمارين CBT التفاعلية ==========
+# ========== تمارين CBT ==========
 @dataclass
 class ThoughtRecord:
     situation: str = ""
@@ -215,6 +223,30 @@ PC_PTSD5_ITEMS = [
     "هل شعرت بالذنب أو اللوم بسبب الحدث؟ (نعم/لا)"
 ]
 
+# —— اختبارات اضطرابات الشخصية (جديدة) ——
+SAPAS_ITEMS = [
+    "هل تجد صعوبة في تكوين علاقات قريبة دائمة؟ (نعم/لا)",
+    "هل تميل لكونك اندفاعيًا أو تتصرف دون تفكير؟ (نعم/لا)",
+    "هل تميل للمشاجرات أو الخلافات المتكرّرة؟ (نعم/لا)",
+    "هل يصفك الناس بأنك «غريب الأطوار» أو «غير عادي»؟ (نعم/لا)",
+    "هل تجد صعوبة في الثقة بالناس أو تشكّ بهم؟ (نعم/لا)",
+    "هل تتجنّب الاختلاط لأنك تخشى الإحراج أو الرفض؟ (نعم/لا)",
+    "هل تميل للقلق الزائد والهمّ على أشياء صغيرة؟ (نعم/لا)",
+    "هل تلتزم بقواعد صارمة/كمالية مفرطة تؤثر على حياتك؟ (نعم/لا)"
+]
+MSI_BPD_ITEMS = [
+    "هل علاقاتك القريبة شديدة التقلب؟ (نعم/لا)",
+    "هل تتأرجح صورتك عن نفسك جدًا؟ (نعم/لا)",
+    "هل سلوكك اندفاعي يؤذيك أحيانًا؟ (نعم/لا)",
+    "هل مررت بمحاولات/تهديدات إيذاء نفسك؟ (نعم/لا)",
+    "هل مشاعرك تتقلب بسرعة وبشدة؟ (نعم/لا)",
+    "هل تشعر بفراغ داخلي دائم؟ (نعم/لا)",
+    "هل تغضب بقوة ويصعب تهدئتك؟ (نعم/لا)",
+    "هل تشك أن الناس سيتركونك وتتعلق بشدة؟ (نعم/لا)",
+    "هل تشعر بالتوتر الشديد أو أفكار غريبة تحت الضغط؟ (نعم/لا)",
+    "هل لديك سلوكيات تجنّب/اختبار للآخرين خوف الهجر؟ (نعم/لا)"
+]
+
 TEST_BANK: Dict[str, Dict[str, Any]] = {
     "gad7": {"title": "GAD-7 — القلق",
              "survey": Survey("gad7", "GAD-7 — القلق", GAD7_ITEMS,
@@ -236,10 +268,10 @@ PD_TEXT = (
     "**A (غريبة/شاذة):** الزورية، الفُصامية/الانعزالية، الفُصامية الشكل.\n"
     "**B (درامية/اندفاعية):** المعادية للمجتمع، الحدّية، الهستيرية، النرجسية.\n"
     "**C (قلِقة/خائفة):** التجنبية، الاتكالية، الوسواسية القهرية للشخصية.\n\n"
-    "ℹ️ التثقيف فقط—not تشخيص. اطلب تقييمًا عند المعاناة أو تأثير واضح على الحياة."
+    "ℹ️ للمعلومة فقط — ليست تشخيصًا. للاختبارات اذهب إلى «الاختبارات النفسية» واختر SAPAS أو MSI-BPD."
 )
 
-# ========== ذكاء اصطناعي: عميل ودالة توليد ==========
+# ========== ذكاء اصطناعي ==========
 AI_SYSTEM_PROMPT = (
     "أنت «عربي سايكو»، مساعد نفسي عربي داعم يعتمد مبادئ CBT.\n"
     "- تحدث بلطف ووضوح وبالعربية الفصحى المبسطة.\n"
@@ -249,24 +281,20 @@ AI_SYSTEM_PROMPT = (
 )
 
 def _openai_client():
-    if not (_HAS_OPENAI and OPENAI_API_KEY):
+    if not (_HAS_OPENAI and AI_API_KEY):
         return None
     try:
-        return OpenAI(api_key=OPENAI_API_KEY)
+        return OpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
     except Exception:
         return None
 
 def _openai_complete(messages: List[Dict[str, str]]) -> str:
-    """
-    يستدعي OpenAI تزامنيًا (سنشغله بخيط عبر asyncio.to_thread).
-    """
     client = _openai_client()
     if client is None:
-        return ("(خدمة الذكاء الاصطناعي غير مفعّلة حاليًا: لم يتم ضبط OPENAI_API_KEY أو مكتبة openai غير مثبتة)\n"
-                "ثبّت الحزمة وشغّل المفتاح لتفعيل جلسة عربي سايكو.")
+        return ("(خدمة الذكاء الاصطناعي غير مفعّلة: اضبط AI_API_KEY وAI_BASE_URL أو OPENAI_API_KEY)")
     try:
         resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=AI_MODEL,
             messages=messages,
             temperature=0.4,
             max_tokens=600,
@@ -276,14 +304,10 @@ def _openai_complete(messages: List[Dict[str, str]]) -> str:
         return f"(تعذّر توليد الرد: {e})"
 
 async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
-    # نحافظ على تاريخ قصير لكل مستخدم
     hist: List[Dict[str, str]] = context.user_data.get("ai_history", [])
-    # قصّ إلى آخر 10 تبادلات
     hist = hist[-20:]
     convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [{"role": "user", "content": user_text}]
-    # تشغيل النداء في خيط منفصل حتى لا نحجب الحلقة
     reply = await asyncio.to_thread(_openai_complete, convo)
-    # حدّث السجل
     hist += [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
     context.user_data["ai_history"] = hist[-20:]
     return reply
@@ -299,13 +323,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== المستوى الأعلى ==========
 async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
+
     if t.startswith("عربي سايكو"):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("ابدأ جلسة عربي سايكو 🤖", callback_data="start_ai")],
-            [InlineKeyboardButton("تواصل معي", url="https://t.me/your_contact")],
+            [InlineKeyboardButton("تواصل معي", url=(CONTACT_URL or "https://t.me/"))],
         ])
         await update.message.reply_text(
-            "أنا مساعد نفسي مدعوم بالذكاء الاصطناعي.\n"
+            "أنا مساعد نفسي مدعوم بالذكاء الاصطناعي تحت إشراف أخصائي نفسي مرخّص.\n"
             "ابدأ جلستك أو تواصل مع الأخصائي.\n"
             "تنبيه: لست بديلاً للطوارئ الطبية.",
             reply_markup=kb
@@ -322,7 +347,7 @@ async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if t.startswith("اضطرابات الشخصية"):
         await send_long(update.effective_chat, PD_TEXT)
-        await update.message.reply_text("للدعم العملي اختر CBT أو ابدأ جلسة عربي سايكو.", reply_markup=TOP_KB)
+        await update.message.reply_text("للدعم العملي اختر CBT أو اذهب للاختبارات النفسية.", reply_markup=TOP_KB)
         return MENU
 
     if t.startswith("التسعيرة"):
@@ -339,11 +364,10 @@ async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_ai_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # تهيئة سجل الجلسة
     context.user_data["ai_history"] = []
     await q.message.chat.send_message(
         "بدأت جلسة **عربي سايكو**.\n"
-        "اكتب شكواك أو ما يقلقك الآن. لانهاء الجلسة اضغط «◀️ إنهاء جلسة عربي سايكو» أو اكتب /خروج.",
+        "اكتب شكواك أو ما يقلقك الآن. لإنهاء الجلسة اضغط «◀️ إنهاء جلسة عربي سايكو» أو اكتب /خروج.",
         reply_markup=AI_CHAT_KB
     )
     return AI_CHAT
@@ -353,8 +377,7 @@ async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
         await update.message.reply_text("انتهت جلسة عربي سايكو. رجوع للقائمة.", reply_markup=TOP_KB)
         return MENU
-    # عرض حالة الكتابة
-    await update.effective_chat.send_chat_action(action="typing")
+    await update.effective_chat.send_action(ChatAction.TYPING)
     reply = await ai_respond(text, context)
     await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
     return AI_CHAT
@@ -477,6 +500,7 @@ async def expo_receive_rating(update: Update, context: ContextTypes.DEFAULT_TYPE
     if n is None or not (0 <= n <= 10):
         await update.message.reply_text("أرسل رقمًا من 0 إلى 10.")
         return EXPO_WAIT_RATING
+    context.user_data["expo"] = context.user_data.get("expo") or ExposureState()
     st: ExposureState = context.user_data["expo"]
     st.suds = n
     kb = InlineKeyboardMarkup([
@@ -492,8 +516,7 @@ async def expo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data == "expo_suggest":
         s = "أمثلة 3–4/10:\n- ركوب المصعد لطابقين\n- الانتظار في صف قصير\n- الجلوس قرب المخرج في مقهى 10 دقائق\n\nاكتب موقفك الآن."
-        await q.edit_message_text(s)
-        return EXPO_FLOW
+        await q.edit_message_text(s);  return EXPO_FLOW
     if q.data == "expo_help":
         await q.edit_message_text("القاعدة: تعرّض آمن + منع الطمأنة + البقاء حتى يهبط القلق للنصف. ثم كرر واصعد درجة.")
         return EXPO_FLOW
@@ -515,11 +538,9 @@ async def expo_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def expo_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data == "expo_start":
-        await q.edit_message_text("بالتوفيق! عند الانتهاء أرسل الدرجة الجديدة (0–10).")
-        return EXPO_WAIT_RATING
+        await q.edit_message_text("بالتوفيق! عند الانتهاء أرسل الدرجة الجديدة (0–10).");  return EXPO_WAIT_RATING
     if q.data == "expo_rate":
-        await q.edit_message_text("أرسل الدرجة الجديدة (0–10).")
-        return EXPO_WAIT_RATING
+        await q.edit_message_text("أرسل الدرجة الجديدة (0–10).");  return EXPO_WAIT_RATING
     return EXPO_FLOW
 
 # ========== الاختبارات ==========
@@ -544,6 +565,8 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "اختبار الشخصية (TIPI)": "tipi",
         "فحص نوبات الهلع": "panic",
         "PC-PTSD-5 ما بعد الصدمة": "pcptsd5",
+        "SAPAS اضطراب شخصية": "sapas",     # ← جديد
+        "MSI-BPD حدية": "msi_bpd",          # ← جديد
     }
     if t not in key_map:
         await update.message.reply_text("اختر اختبارًا من الأزرار:", reply_markup=TESTS_KB)
@@ -564,6 +587,26 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(PC_PTSD5_ITEMS[0], reply_markup=ReplyKeyboardRemove())
         return PTSD_Q
 
+    # —— جديد: SAPAS / MSI-BPD (أسئلة نعم/لا) ——
+    if kid == "sapas":
+        context.user_data["sapas_i"] = 0
+        context.user_data["sapas_yes"] = 0
+        await update.message.reply_text(
+            "بدء SAPAS (فحص اضطراب الشخصية). أجب نعم/لا.\n" + SAPAS_ITEMS[0],
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return SAPAS_Q
+
+    if kid == "msi_bpd":
+        context.user_data["msi_i"] = 0
+        context.user_data["msi_yes"] = 0
+        await update.message.reply_text(
+            "بدء MSI-BPD (فحص الحدّية). أجب نعم/لا.\n" + MSI_BPD_ITEMS[0],
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return MSI_Q
+
+    # —— الاستبيانات الرقمية (GAD/PHQ/Mini-SPIN/TIPI) ——
     base = TEST_BANK[kid]["survey"]
     s = Survey(base.id, base.title, list(base.items), base.scale_text, base.min_val, base.max_val, list(base.reverse))
     context.user_data["survey"] = s
@@ -571,45 +614,73 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"بدء **{s.title}**.\n{survey_prompt(s,0)}", reply_markup=ReplyKeyboardRemove())
     return SURVEY_ACTIVE
 
+# —— تدفق فحص الهلع (سابق) ——
 async def panic_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st: PanicState = context.user_data["panic"]
     ans = yn(update.message.text)
     if ans is None:
-        await update.message.reply_text("أجب بـ نعم/لا.")
-        return PANIC_Q
+        await update.message.reply_text("أجب بـ نعم/لا.");  return PANIC_Q
     st.ans.append(ans); st.i += 1
     if st.i == 1:
         await update.message.reply_text("هل تخاف من حدوث نوبة أخرى أو تتجنب أماكن خوفًا من ذلك؟ (نعم/لا)")
         return PANIC_Q
-    # حساب النتيجة
     a1, a2 = st.ans
     result = "سلبي (لا مؤشر قوي لنوبات هلع حاليًا)." if not (a1 and a2) else "إيجابي — قد تكون هناك نوبات هلع/قلق متوقعة."
     note = "إن أثّرت الأعراض على حياتك أو وُجد ألم صدري/ضيق شديد، راجع مختصًا."
     await update.message.reply_text(f"**نتيجة فحص الهلع:** {result}\n{note}", reply_markup=TESTS_KB)
     return TESTS_MENU
 
+# —— جديد: تدفق SAPAS ——
+async def sapas_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ans = yn(update.message.text)
+    if ans is None:
+        await update.message.reply_text("أجب بـ نعم/لا.");  return SAPAS_Q
+    if ans: context.user_data["sapas_yes"] += 1
+    context.user_data["sapas_i"] += 1
+    i = context.user_data["sapas_i"]
+    if i < len(SAPAS_ITEMS):
+        await update.message.reply_text(SAPAS_ITEMS[i]);  return SAPAS_Q
+    yes = context.user_data["sapas_yes"]
+    result = "إيجابي (≥3 نعم) — يُستحسن التقييم لدى مختص." if yes >= 3 else "سلبي — أقل من حد الإشارة."
+    await update.message.reply_text(f"**نتيجة SAPAS:** {yes}/8 — {result}", reply_markup=TESTS_KB)
+    return TESTS_MENU
+
+# —— جديد: تدفق MSI-BPD ——
+async def msi_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ans = yn(update.message.text)
+    if ans is None:
+        await update.message.reply_text("أجب بـ نعم/لا.");  return MSI_Q
+    if ans: context.user_data["msi_yes"] += 1
+    context.user_data["msi_i"] += 1
+    i = context.user_data["msi_i"]
+    if i < len(MSI_BPD_ITEMS):
+        await update.message.reply_text(MSI_BPD_ITEMS[i]);  return MSI_Q
+    yes = context.user_data["msi_yes"]
+    result = "إيجابي (≥7 نعم) — يُستحسن التقييم لدى مختص." if yes >= 7 else "سلبي — أقل من حد الإشارة."
+    await update.message.reply_text(f"**نتيجة MSI-BPD:** {yes}/10 — {result}", reply_markup=TESTS_KB)
+    return TESTS_MENU
+
+# —— PTSD (سابق) ——
 async def ptsd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = yn(update.message.text)
     if ans is None:
-        await update.message.reply_text("أجب بـ نعم/لا.")
-        return PTSD_Q
+        await update.message.reply_text("أجب بـ نعم/لا.");  return PTSD_Q
     if ans: context.user_data["ptsd_yes"] += 1
     context.user_data["ptsd_i"] += 1
     i = context.user_data["ptsd_i"]; qs = context.user_data["ptsd_qs"]
     if i < len(qs):
-        await update.message.reply_text(qs[i])
-        return PTSD_Q
+        await update.message.reply_text(qs[i]);  return PTSD_Q
     yes = context.user_data["ptsd_yes"]
     result = "إيجابي (≥3 بنود نعم) — يُوصى بالتقييم." if yes >= 3 else "سلبي — أقل من حد الإشارة."
     await update.message.reply_text(f"**نتيجة PC-PTSD-5:** {yes}/5 — {result}", reply_markup=TESTS_KB)
     return TESTS_MENU
 
+# —— استبيانات رقمية عامة ——
 async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s: Survey = context.user_data["survey"]; idx = context.user_data["survey_idx"]
     n = to_int(update.message.text)
     if n is None or not (s.min_val <= n <= s.max_val):
-        await update.message.reply_text(f"أدخل رقمًا بين {s.min_val} و{s.max_val}.")
-        return SURVEY_ACTIVE
+        await update.message.reply_text(f"أدخل رقمًا بين {s.min_val} و{s.max_val}.");  return SURVEY_ACTIVE
 
     s.answers.append(n); idx += 1
     if idx >= len(s.items):
@@ -640,7 +711,7 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if s.id == "tipi":
             vals = s.answers[:]
-            for i in s.reverse: vals[i] = 8 - vals[i]  # عكس البنود (مدى 1..7)
+            for i in s.reverse: vals[i] = 8 - vals[i]  # عكس البنود (1..7)
             extr = (vals[0] + vals[5]) / 2
             agre = (vals[1] + vals[6]) / 2
             cons = (vals[2] + vals[7]) / 2
@@ -669,19 +740,21 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
     return MENU
 
-# ========== ربط كل شيء ==========
+# ========== ربط + Webhook/Polling ==========
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("يرجى ضبط متغير البيئة BOT_TOKEN")
+        raise RuntimeError("يرجى ضبط TELEGRAM_BOT_TOKEN أو BOT_TOKEN")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
+
             CBT_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
             ],
             THOUGHT_SITU: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
             THOUGHT_EMO: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
@@ -702,6 +775,8 @@ def main():
             SURVEY_ACTIVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
             PANIC_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
             PTSD_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
+            SAPAS_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, sapas_flow)],   # ← جديد
+            MSI_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, msi_flow)],       # ← جديد
 
             AI_CHAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
         },
@@ -711,7 +786,22 @@ def main():
 
     app.add_handler(CallbackQueryHandler(start_ai_cb, pattern="^start_ai$"))
     app.add_handler(conv)
-    app.run_polling()
+
+    PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("WEBHOOK_URL")
+    PORT = int(os.getenv("PORT", "10000"))
+
+    if PUBLIC_URL:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=f"{BOT_TOKEN}",
+            webhook_url=f"{PUBLIC_URL}/{BOT_TOKEN}",
+            drop_pending_updates=True,
+        )
+    else:
+        app.run_polling(
+            drop_pending_updates=True,
+        )
 
 if __name__ == "__main__":
     main()
