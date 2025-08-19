@@ -1,94 +1,115 @@
-# app.py — Arabi Psycho Telegram Bot (CBT + Tests + Educational Dx + AI Chat)
-# -------------------------------------------
+# app.py — Arabi Psycho (Tests + CBT + Triage + Pricing + Contact)
+# ─────────────────────────────────────────────────────────────────
 import os, json, logging
 from flask import Flask, request, jsonify
 import requests
 
-# ========= الإعدادات =========
+# ============ إعدادات عامة ============
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN")
 BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 WEBHOOK_SECRET     = os.environ.get("WEBHOOK_SECRET", "secret")
-RENDER_EXTERNAL_URL= os.environ.get("RENDER_EXTERNAL_URL", "")
-ADMIN_CHAT_ID      = os.environ.get("ADMIN_CHAT_ID", "")
-CONTACT_PHONE      = os.environ.get("CONTACT_PHONE", "")
+RENDER_EXTERNAL_URL= os.environ.get("RENDER_EXTERNAL_URL")
+ADMIN_CHAT_ID      = os.environ.get("ADMIN_CHAT_ID", "")  # لإشعارات "تواصل"
+CONTACT_PHONE      = os.environ.get("CONTACT_PHONE", "")  # رقم تواصل يظهر للعميل
 
-# الذكاء الاصطناعي (OpenAI-compatible مثل OpenRouter)
-AI_BASE_URL = (os.environ.get("AI_BASE_URL", "") or "").rstrip("/")
-AI_API_KEY  = os.environ.get("AI_API_KEY", "")
-AI_MODEL    = os.environ.get("AI_MODEL", "openai/gpt-4o-mini")
+# تسعير (اختياري للعرض فقط الآن)
+PRICE_ENABLED      = os.environ.get("PRICE_ENABLED", "false").lower() == "true"
+PRICE_GAD7         = os.environ.get("PRICE_GAD7", "15")   # ريال/… الخ
+PRICE_PHQ9         = os.environ.get("PRICE_PHQ9", "15")
+PRICE_PANIC        = os.environ.get("PRICE_PANIC", "20")
+PAY_INSTRUCTIONS   = os.environ.get("PAY_INSTRUCTIONS",
+    "للدفع: حوّل على الحساب المتفق عليه ثم أرسل الإيصال عبر زر تواصل.")
 
-# ========= تحضير التطبيق =========
+# أطباء/مشرفون (اختياري)
+DOCTORS_JSON = os.environ.get("DOCTORS_JSON", '[]')  # مثال: [{"name":"د. سارة","license":"MOH-1234"}]
+try:
+    DOCTORS = json.loads(DOCTORS_JSON)
+except Exception:
+    DOCTORS = []
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arabi-psycho")
 
-# ========= أدوات تيليجرام =========
+# ============ أدوات تيليجرام ============
 def tg(method, payload):
-    r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=30)
+    r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=15)
     if r.status_code != 200:
-        log.warning("TG %s -> %s %s", method, r.status_code, r.text[:300])
+        log.warning("TG %s -> %s | %s", method, r.status_code, r.text[:300])
     return r
 
-def send(chat_id, text, reply_markup=None, parse_mode="HTML"):
-    data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
-    if reply_markup: data["reply_markup"] = reply_markup
+def send(cid, text, reply_markup=None, parse_mode="HTML"):
+    data = {"chat_id": cid, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
+    if reply_markup:
+        data["reply_markup"] = reply_markup
     return tg("sendMessage", data)
 
-def inline(rows):
+def inline(rows):  # لوحة أزرار داخلية
     return {"inline_keyboard": rows}
 
-def reply_kb():
-    # لوحة أزرار سفلية دائمة
+def menu_kb():     # لوحة سفلية مختصرة (6 أزرار)
     return {
         "keyboard": [
-            [{"text":"العلاج السلوكي"}, {"text":"اختبارات"}],
-            [{"text":"التثقيف"}, {"text":"تشخيص تعليمي"}],
-            [{"text":"نوم"}, {"text":"حزن"}],
-            [{"text":"قلق"}, {"text":"اكتئاب"}],
-            [{"text":"تنفّس"}, {"text":"عربي سايكو"}],
-            [{"text":"عن عربي سايكو"}, {"text":"تواصل"}],
-            [{"text":"مساعدة"}],
+            [{"text":"🧪 اختبارات"}, {"text":"🧠 العلاج السلوكي"}],
+            [{"text":"📊 تشخيص مبدئي"}, {"text":"📚 تثقيف نفسي"}],
+            [{"text":"📞 تواصل"}, {"text":"❓ مساعدة"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True
     }
 
-def is_cmd(txt, name):
-    return (txt or "").strip().startswith("/" + name)
+def is_cmd(txt, name): return (txt or "").strip().lower().startswith("/"+name)
 
-# ========= فلاتر أمان بسيطة =========
-CRISIS_WORDS = ["انتحار","ااذي نفسي","اذي نفسي","قتل نفسي","لم اعد اريد العيش","ما ابغى اعيش"]
-def crisis_guard(text):
-    low = (text or "").replace("أ","ا").replace("إ","ا").replace("آ","ا").lower()
-    return any(w in low for w in CRISIS_WORDS)
-
-# ========= التعليمات & نبذة =========
-ABOUT = (
-    "<b>عربي سايكو</b> 🤖 مساعد نفسي تعليمي باللغة العربية.\n"
-    "يقدّم مواد تثقيفية وتمارين CBT بسيطة واختبارات قياسية ذاتيًا.\n"
-    "<b>تنبيه مهم:</b> لستُ بديلًا عن التشخيص أو العلاج لدى مختص. "
-    "المشروع تحت إشراف <b>أخصائي نفسي مرخّص</b>؛ المحتوى لأغراض التثقيف والدعم فقط.\n"
-    f"{'هاتف للتواصل: ' + CONTACT_PHONE if CONTACT_PHONE else ''}"
+# ============ نص المقدمة والتنبيه ============
+INTRO = (
+    "مرحبًا بك! كيف نبدأ اليوم؟ إليك بعض الخيارات:\n"
+    "1) <b>التعامل مع القلق</b>: ناقش موقفك وسنساعدك في تحليل الأفكار.\n"
+    "2) <b>تحسين المزاج</b>: تمارين سلوكية بسيطة لزيادة النشاط الآن.\n\n"
+    "🤖 <b>عربي سايكو</b> مساعد نفسي <u>تعليمي</u> باللغة العربية.\n"
+    "يقدم مواد تثقيفية وتمارين CBT بسيطة واختبارات قياسية لقياس الذات.\n"
+    "<b>تنبيه مهم:</b> لستُ بديلاً عن التشخيص أو العلاج لدى مختص.\n"
+    "المشروع تحت إشراف <b>أخصائي نفسي مرخّص</b>، والمحتوى لأغراض التثقيف والدعم فقط."
 )
 
-HELP = (
-    "الأوامر:\n"
-    "• /start لبدء الاستخدام\n"
-    "• /menu لعرض الأزرار\n"
-    "• /tests لبدء الاختبارات\n"
-    "• /cbt لبطاقات العلاج السلوكي\n"
-    "• اكتب «عربي سايكو» لبدء محادثة ذكية\n"
-    "• «تشخيص تعليمي» للحصول على مسارات ونصائح مبسطة"
-)
+# ============ بنود CBT ============
+CBT_CARDS = [
+    ("أخطاء التفكير", 
+     "الأبيض/الأسود، التعميم، قراءة الأفكار، التنبؤ، التهويل…\n"
+     "الخطوات: ١) التقط الفكرة ٢) الدليل معها/ضدها ٣) صياغة متوازنة."),
+    ("الأسئلة العشرة لتحدي الأفكار",
+     "الدليل؟ البدائل؟ لو صديق مكاني؟ أسوأ/أفضل/أرجح؟ هل أعمّم/أقرأ أفكار؟\n"
+     "ماذا أتجاهل؟ ماذا أنصح لو طال الأمر صديقًا لي؟"),
+    ("الاسترخاء", 
+     "تنفس 4-7-8 ×6 مرات. شد/إرخِ العضلات من القدم للرأس (PMR)."),
+    ("التنشيط السلوكي", 
+     "اختر نشاطين صغيرين اليوم (ممتع/نافع). قاعدة 5 دقائق. قيّم مزاجك قبل/بعد."),
+    ("اليقظة الذهنية",
+     "تمرين 5-4-3-2-1 للحواس. لاحظ بلا حكم. ارجع للحاضر."),
+    ("حل المشكلات", 
+     "عرّف المشكلة → فكّر ببدائل → خطة صغيرة SMART → جرّب → قيّم.")
+]
+def cbt_menu(cid):
+    rows = []
+    for title, _ in CBT_CARDS:
+        rows.append([{"text": title, "callback_data": "cbt:"+title}])
+    send(cid, "اختر بطاقة من العلاج السلوكي:", inline(rows))
 
-# ========= اختبارات نفسية =========
-ANS4 = [("أبدًا",0), ("عدة أيام",1), ("أكثر من النصف",2), ("تقريبًا يوميًا",3)]
-G7 = [
+def cbt_send(cid, title):
+    for t, body in CBT_CARDS:
+        if t == title:
+            send(cid, f"<b>{t}</b>\n{body}", menu_kb())
+
+# ============ الاختبارات ============
+# خيارات الإجابة
+ANS_4 = [("أبدًا",0), ("عدة أيام",1), ("أكثر من النصف",2), ("تقريبًا يوميًا",3)]
+ANS_5 = [("0",0), ("1",1), ("2",2), ("3",3), ("4",4)]
+
+GAD7 = [
     "التوتر/العصبية أو الشعور بالقلق",
-    "عدم القدرة على التوقف عن القلق أو السيطرة عليه",
+    "عدم التمكن من إيقاف القلق أو السيطرة عليه",
     "الانشغال بالهموم بدرجة كبيرة",
     "صعوبة الاسترخاء",
     "تململ/صعوبة الجلوس بهدوء",
@@ -101,401 +122,218 @@ PHQ9 = [
     "مشاكل في النوم أو النوم كثيرًا",
     "الإرهاق أو قلة الطاقة",
     "ضعف الشهية أو الإفراط في الأكل",
-    "الشعور بتدني تقدير الذات أو الذنب",
+    "الشعور بعدم القيمة أو الذنب",
     "صعوبة التركيز",
-    "الحركة/الكلام ببطء شديد أو على العكس بتوتر زائد",
-    "أفكار بأنك ستكون أفضل حالًا لو لم تكن موجودًا"
+    "بطء/توتر بالحركة أو الكلام",
+    "أفكار بأنك ستكون أفضل لو لم تكن موجودًا"
 ]
-# PDSS-SR مبسّط لنوبات الهلع (0-4)
-ANS5 = [("0 لا شيء",0), ("1 خفيف",1), ("2 متوسط",2), ("3 شديد",3), ("4 شديد جدًا",4)]
-PDSS = [
-    "مدى شدة نوبات الهلع خلال الأسبوعين الماضيين",
-    "مدى تكرار نوبات الهلع",
-    "الخوف من حدوث نوبة أخرى",
-    "تجنب الأماكن/المواقف خوفًا من الهلع",
-    "الضيق الناجم عن القلق المتوقع (anticipatory)",
-    "الأثر على العمل/الدراسة",
-    "الأثر على العلاقات/الحياة الاجتماعية"
+# PDSS-SR «مبسّط» 7 بنود (0–4)
+PANIC7 = [
+    "عدد نوبات الهلع خلال الأسبوعين الماضيين",
+    "شدة أعراض النوبة عندما تحدث",
+    "القلق anticipatory (الخوف من قدوم نوبة)",
+    "تجنّب أماكن/مواقف خوفًا من النوبة",
+    "تأثير الأعراض على العمل/الدراسة",
+    "تأثير الأعراض على العلاقات/الخروج",
+    "الاستعانة بسلوكيات أمان مفرطة (طمأنة/حمل ماء..)"
 ]
 
 TESTS = {
-    "g7":  {"name":"مقياس القلق GAD-7",     "q": G7,   "ans": ANS4},
-    "phq": {"name":"مقياس الاكتئاب PHQ-9",  "q": PHQ9, "ans": ANS4},
-    "pdss":{"name":"مقياس نوبات الهلع (PDSS-SR مبسّط)", "q": PDSS, "ans": ANS5},
+    "g7":  {"name": "اختبار القلق (GAD-7)",  "q": GAD7,   "ans": ANS_4, "max": 21},
+    "phq": {"name": "اختبار الاكتئاب (PHQ-9)","q": PHQ9,   "ans": ANS_4, "max": 27},
+    "panic":{"name":"مقياس الهلع (PDSS-SR مبسّط)","q": PANIC7,"ans": ANS_5, "max": 28},
 }
-SESS = {}  # {uid: {"key":..., "i":..., "score":...}}
+SESS = {}  # {uid: {"key":, "i":, "score":}}
 
-def tests_menu(chat_id):
-    send(chat_id, "اختر اختبارًا:", inline([
-        [{"text":"اختبار القلق (GAD-7)", "callback_data":"t:g7"}],
-        [{"text":"اختبار الاكتئاب (PHQ-9)", "callback_data":"t:phq"}],
-        [{"text":"اختبار نوبات الهلع (PDSS-SR)", "callback_data":"t:pdss"}],
-    ]))
+def tests_menu(cid):
+    rows = [
+        [{"text":"اختبار القلق (GAD-7)",   "callback_data":"t:g7"}],
+        [{"text":"اختبار الاكتئاب (PHQ-9)","callback_data":"t:phq"}],
+        [{"text":"مقياس الهلع (PDSS-SR)",  "callback_data":"t:panic"}],
+    ]
+    if PRICE_ENABLED:
+        price = (f"💳 التسعير — قلق: {PRICE_GAD7} • اكتئاب: {PRICE_PHQ9} • هلع: {PRICE_PANIC}\n"
+                 f"{PAY_INSTRUCTIONS}")
+        send(cid, price)
+    send(cid, "اختر اختبارًا:", inline(rows))
 
-def start_test(chat_id, uid, key):
+def start_test(cid, uid, key):
     data = TESTS[key]
     SESS[uid] = {"key": key, "i": 0, "score": 0}
-    send(chat_id, f"سنبدأ: <b>{data['name']}</b>\nأجب بحسب آخر أسبوعين.", reply_kb())
-    ask_next(chat_id, uid)
+    send(cid, f"سنبدأ: <b>{data['name']}</b>\nأجب حسب آخر أسبوعين.", menu_kb())
+    ask_next(cid, uid)
 
-def ask_next(chat_id, uid):
+def ask_next(cid, uid):
     st = SESS.get(uid)
     if not st: return
     key, i = st["key"], st["i"]; qs = TESTS[key]["q"]; ans = TESTS[key]["ans"]
     if i >= len(qs):
-        score = st["score"]; SESS.pop(uid, None)
-        txt = f"النتيجة: <b>{score}</b>\n{interpret_test(key, score)}"
-        send(chat_id, txt, reply_kb()); return
-    # بناء الأزرار بحسب عدد الخيارات
-    rows = []
+        score = st["score"]; total = TESTS[key]["max"]
+        send(cid, f"النتيجة: <b>{score}</b> من {total}\n{interpret(key,score)}", menu_kb())
+        SESS.pop(uid, None); return
+    q = qs[i]
+    # ابنِ أزرار الإجابة
     row = []
+    rows = []
     for idx, (label, _) in enumerate(ans):
-        row.append({"text": label, "callback_data": f"a{idx}"})
-        if len(row) == 2:
+        row.append({"text":label, "callback_data": f"a{idx}"})
+        if len(row)==2 and ans is ANS_4:
+            rows.append(row); row=[]
+        if len(row)==3 and ans is ANS_5:
             rows.append(row); row=[]
     if row: rows.append(row)
-    send(chat_id, f"س{ i+1 }: {qs[i]}", inline(rows))
+    send(cid, f"س{ i+1 }: {q}", inline(rows))
 
-def record_answer(chat_id, uid, ans_idx):
+def record_answer(cid, uid, ans_idx):
     st = SESS.get(uid)
     if not st: return
     key = st["key"]; ans = TESTS[key]["ans"]
-    if 0 <= ans_idx < len(ans):
-        st["score"] += ans[ans_idx][1]
-        st["i"] += 1
-    ask_next(chat_id, uid)
+    val = ans[ans_idx][1]
+    st["score"] += val
+    st["i"] += 1
+    ask_next(cid, uid)
 
-def interpret_test(key, score):
-    if key == "g7":
-        if score <= 4: lvl = "قلق ضئيل"
-        elif score <= 9: lvl = "قلق خفيف"
-        elif score <= 14: lvl = "قلق متوسط"
-        else: lvl = "قلق شديد"
-        return f"<b>{lvl}</b> — جرّب تمارين التنفّس، وثبّت مواعيد نومك. اطلب مساعدة مختص إذا أثر على حياتك."
-    if key == "phq":
-        if score <= 4: lvl="ضئيل"
-        elif score <= 9: lvl="خفيف"
-        elif score <= 14: lvl="متوسط"
-        elif score <= 19: lvl="متوسط إلى شديد"
+def interpret(key, score):
+    if key=="g7":
+        if score<=4:   lvl="قلق ضئيل"
+        elif score<=9: lvl="قلق خفيف"
+        elif score<=14:lvl="قلق متوسط"
+        else:          lvl="قلق شديد"
+        return f"<b>{lvl}</b> — ابدأ بتنظيم النوم وتقليل الكافيين وتمارين التنفس. جرّب بطاقات CBT."
+    if key=="phq":
+        if score<=4: lvl="ضئيل"
+        elif score<=9: lvl="خفيف"
+        elif score<=14:lvl="متوسط"
+        elif score<=19:lvl="متوسط إلى شديد"
         else: lvl="شديد"
-        return f"<b>اكتئاب {lvl}</b> — نوصي بالتنشيط السلوكي، والدعم الاجتماعي، ومراجعة مختص عند الارتفاع."
-    if key == "pdss":
-        if score <= 7: lvl="ضئيل"
-        elif score <= 15: lvl="خفيف"
-        elif score <= 23: lvl="متوسط"
-        elif score <= 28: lvl="شديد"
-        else: lvl="شديد جدًا"
-        return f"<b>نوبات هلع: {lvl}</b> — التعرض التدريجي وتمارين التنفّس مفيدة. إن كانت النوبات متكررة، استشر مختصًا."
+        return f"<b>اكتئاب {lvl}</b> — فعّل التنشيط السلوكي والتواصل الاجتماعي، واستشر مختصًا عند الشدة."
+    if key=="panic":
+        if score<=7:   lvl="أعراض هلع خفيفة"
+        elif score<=14: lvl="متوسطة"
+        elif score<=21: lvl="متوسطة إلى شديدة"
+        else:           lvl="شديدة"
+        return f"<b>{lvl}</b> — ابدأ بتدريبات التنفس، وقلّل سلوكيات الأمان، وفكّر ببرنامج تعرّض تدريجي آمن."
     return "تم."
 
-# ========= بطاقات العلاج السلوكي (CBT) =========
-CBT_ITEMS = [
-    ("أخطاء التفكير", "c:cd"),
-    ("الاجترار والكبت", "c:rum"),
-    ("الأسئلة العشرة", "c:q10"),
-    ("الاسترخاء", "c:rlx"),
-    ("التنشيط السلوكي", "c:ba"),
-    ("اليقظة الذهنية", "c:mind"),
-    ("حل المشكلات", "c:ps"),
-    ("سلوكيات الأمان", "c:safe"),
-]
-def cbt_menu(chat_id):
-    rows=[]
-    for i in range(0, len(CBT_ITEMS), 2):
-        rows.append([{"text":CBT_ITEMS[i][0], "callback_data":CBT_ITEMS[i][1]},
-                     {"text":CBT_ITEMS[i+1][0], "callback_data":CBT_ITEMS[i+1][1]}])
-    send(chat_id, "اختر موضوع العلاج السلوكي:", inline(rows))
+# ============ تشخيص مبدئي ============
+def triage_text():
+    return (
+        "📊 <b>تشخيص مبدئي (غير طبي)</b>\n"
+        "• القياس يتم عبر اختبارات قياسية (GAD-7/PHQ-9/PDSS-SR) لقياس <u>شدة</u> الأعراض فقط.\n"
+        "• النتيجة تساعدك على اختيار الخطة التعليمية (CBT) أو طلب استشارة مختص.\n"
+        "• ليست بديلاً عن التشخيص الطبي. في حال الشدة العالية أو تدهور الوظائف اطلب مساعدة متخصصة."
+    )
 
-def cbt_text(code):
-    if code=="cd":
-        return ["<b>أخطاء التفكير</b>\nالأبيض/الأسود، التعميم، قراءة الأفكار، التنبؤ، التهويل…",
-                "خطوات: ١) التقط الفكرة ٢) أدلة معها/ضدها ٣) صياغة متوازنة واقعية."]
-    if code=="rum":
-        return ["<b>الاجترار والكبت</b>",
-                "سمِّ الفكرة، خصّص «وقت قلق»، حوّل انتباهك لنشاط بسيط (مشي/ترتيب)."]
-    if code=="q10":
-        return ["<b>الأسئلة العشرة</b>",
-                "الدليل؟ البدائل؟ لو صديق مكاني؟ أسوأ/أفضل/أرجح؟ هل أعمّم؟ ماذا أتجاهل؟ الخ…"]
-    if code=="rlx":
-        return ["<b>الاسترخاء</b>", "تنفّس 4-7-8 ×6 مرات. شدّ/إرخِ العضلات من القدم للرأس ببطء."]
-    if code=="ba":
-        return ["<b>التنشيط السلوكي</b>", "نشاطان صغيران يوميًا (ممتع/نافع). قاعدة 5 دقائق. قيّم المزاج قبل/بعد."]
-    if code=="mind":
-        return ["<b>اليقظة الذهنية</b>", "تمرين 5-4-3-2-1 للحواس. لاحظ بلطف وارجع للحاضر دون حكم."]
-    if code=="ps":
-        return ["<b>حل المشكلات</b>", "عرّف المشكلة → بدائل → خطة صغيرة SMART → جرّب → قيّم."]
-    if code=="safe":
-        return ["<b>سلوكيات الأمان</b>", "قلّل الطمأنة والتجنب تدريجيًا مع تعرّض آمن."]
-    return ["تم."]
-
-def cbt_send(chat_id, code):
-    for t in cbt_text(code):
-        send(chat_id, t, reply_kb())
-
-# ========= تثقيف (اضطرابات شائعة) =========
-EDU = {
-    "القلق الاجتماعي":
-        "الخوف من التقييم السلبي. جرّب التعرض التدريجي + إعادة هيكلة الأفكار.",
-    "الاكتئاب":
-        "انخفاض المزاج وفقدان المتعة ≥ أسبوعين. التنشيط السلوكي مهم + دعم اجتماعي.",
-    "الثقة بالنفس":
-        "أعد صياغة الحوار الداخلي، راكم إنجازات صغيرة متدرجة.",
-    "القلق على الصحة":
-        "مبالغة في تفسير الأحاسيس الجسدية. دوّن الدليل مع/ضد واستشر طبيبًا عند الحاجة فقط.",
-    "القلق":
-        "قلق مفرط صعب السيطرة ≥ 6 أشهر مع أعراض توتر. ساعد نفسك بالتنفّس وتنظيم النوم.",
-    "الوسواس القهري":
-        "أفكار/دوافع متكررة مع أفعال قهرية. العلاج المفضل: التعرض ومنع الاستجابة (ERP).",
-    "كرب ما بعد الصدمة":
-        "ذكريات اقتحامية وتجنب وفرط يقظة بعد حدث صادم. يفضّل العلاج المعرفي المُعالج للصدمة.",
-    "نوبات الهلع":
-        "اندفاع مفاجئ من الخوف مع أعراض جسدية. التعرّف عليها + تنفّس بطيء + تعرّض تدريجي.",
-}
-def edu_menu(chat_id):
-    rows=[]
-    items=list(EDU.keys())
-    for i in range(0,len(items),2):
-        l=[{"text":items[i], "callback_data":"ed:"+items[i]}]
-        if i+1<len(items): l.append({"text":items[i+1], "callback_data":"ed:"+items[i+1]})
-        rows.append(l)
-    send(chat_id, "التثقيف النفسي:", inline(rows))
-
-# ========= جلسات سريعة (نوم/حزن/تنفّس) =========
-THERAPY = {
-    "sleep":
-        "<b>بروتوكول النوم المختصر</b>\n• ثبّت الاستيقاظ يوميًا\n• قلّل الشاشات مساءً\n• طقوس تهدئة 30-45د\n"
-        "• السرير = نوم فقط\n• لو ما نمت خلال 20د اخرج لنشاط هادئ وارجع.",
-    "sad":
-        "<b>علاج الحزن (تنشيط سلوكي)</b>\n• 3 أنشطة صغيرة اليوم (ممتع/نافع/اجتماعي)\n• ابدأ بـ10-20د\n• قيّم المزاج قبل/بعد.",
-    "breath":
-        "<b>تنفّس مهدّئ</b>\nاجلس وظهرك معتدل: شهيق 4 ثوانٍ، حبس 2، زفير 6 — كرر 10 مرات ببطء."
-}
-
-# ========= تشخيص تعليمي (مسار مبسّط) =========
-DIAG = {}  # {uid: step}
-def diag_start(chat_id, uid):
-    DIAG[uid]=1
-    send(chat_id,
-         "تشخيص <b>تعليمي</b> مبسّط (ليس تشخيصًا طبيًا).\n"
-         "س١) هل مررتَ بنوبات هلع مفاجئة متكررة آخر شهر؟",
-         inline([[{"text":"نعم","callback_data":"dx:y1"},{"text":"لا","callback_data":"dx:n1"}]]))
-
-def diag_next(chat_id, uid, step, yes):
-    if step==1:
-        DIAG[uid]=2
-        msg = "س٢) خلال أسبوعين ماضيين: مزاج منخفض أو فقدان متعة معظم الأيام؟"
-        send(chat_id, msg, inline([[{"text":"نعم","callback_data":"dx:y2"},{"text":"لا","callback_data":"dx:n2"}]])); return
-    if step==2:
-        DIAG[uid]=3
-        msg = "س٣) قلق مفرط صعب السيطرة عليه معظم الأيام لستة أشهر مع توتر/أرق؟"
-        send(chat_id, msg, inline([[{"text":"نعم","callback_data":"dx:y3"},{"text":"لا","callback_data":"dx:n3"}]])); return
-    if step==3:
-        # توصية
-        DIAG.pop(uid, None)
-        rec=[]
-        if yes.get(1): rec.append("• خذ <b>اختبار نوبات الهلع (PDSS-SR)</b> ثم راجع التثقيف الخاص بالهلع.")
-        if yes.get(2): rec.append("• خذ <b>PHQ-9</b> (اكتئاب) وابدأ بالتنشيط السلوكي.")
-        if yes.get(3): rec.append("• خذ <b>GAD-7</b> (قلق) وجرّب تمارين التنفّس.")
-        if not rec: rec.append("• نتيجتك لا تشير لنمط محدد هنا. استخدم قائمة <b>التثقيف</b> واختر ما يناسبك.")
-        send(chat_id, "خلاصة تعليمية:\n" + "\n".join(rec), reply_kb())
-
-# ========= الذكاء الاصطناعي =========
-def ai_ready(): return bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
-AI_SESS = {}  # {uid: messages}
-SYSTEM_PROMPT = (
-    "أنت «عربي سايكو»، مساعد نفسي تعليمي بالعربية. "
-    "قدّم دعمًا عامًّا وتقنيات CBT البسيطة وتثقيفًا موجزًا. "
-    "لا تُجري تشخيصًا طبيًا ولا تعطي تعليمات دوائية. "
-    "إن ظهرت مؤشرات خطر (إيذاء النفس/الآخرين) فذكّر بطلب مساعدة فورية."
+# ============ تثقيف ============
+EDU = (
+    "📚 <b>التثقيف النفسي المختصر</b>\n"
+    "• القلق: يتضخم بالاجتناب والطمأنة؛ يقل بالتعرّض التدريجي.\n"
+    "• الاكتئاب: ينخفض مع <i>التنشيط السلوكي</i> (نشاط ممتع/نافع يوميًا).\n"
+    "• النوم: ثبّت وقت الاستيقاظ، وطقوس تهدئة 30-45 دقيقة، سرير=نوم فقط.\n"
+    "• التنفس: 4-7-8 ×6 مرات عند التوتر."
 )
 
-def ai_call(messages, max_tokens=220):
-    url = AI_BASE_URL + "/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type":"application/json"}
-    body = {"model": AI_MODEL, "messages": messages, "temperature": 0.4, "max_tokens": max_tokens}
-    r = requests.post(url, headers=headers, json=body, timeout=30)
-    if r.status_code == 402:
-        # رصيد غير كافٍ
-        raise RuntimeError("CREDITS:402")
-    if r.status_code != 200:
-        raise RuntimeError(f"AI {r.status_code}: {r.text[:300]}")
-    data = r.json()
-    return data["choices"][0]["message"]["content"].strip()
+# ============ تواصل ============
+def contact_text():
+    lines = ["📞 <b>التواصل</b>"]
+    if CONTACT_PHONE:
+        lines.append(f"الهاتف/واتساب: <code>{CONTACT_PHONE}</code>")
+    if DOCTORS:
+        lines.append("\n👩‍⚕️ <b>المشرفون/الأطباء</b>:")
+        for d in DOCTORS:
+            nm = d.get("name","")
+            lic = d.get("license","")
+            lines.append(f"• {nm}" + (f" — ترخيص: {lic}" if lic else ""))
+    lines.append("\nهذا المشروع تحت إشراف أخصائي نفسي مرخّص. المحتوى تعليمي فقط.")
+    return "\n".join(lines)
 
-def ai_start(chat_id, uid):
-    if not ai_ready():
-        send(chat_id,
-             "ميزة الذكاء الاصطناعي غير مفعّلة.\n"
-             "أضف المفاتيح: AI_BASE_URL / AI_API_KEY / AI_MODEL ثم أعد النشر.",
-             reply_kb()); return
-    AI_SESS[uid] = [{"role":"system","content":SYSTEM_PROMPT}]
-    send(chat_id,
-         "بدأنا جلسة <b>عربي سايكو</b> 🤖\n"
-         "اكتب سؤالك عن القلق/النوم/CBT…\n"
-         "لإنهاء الجلسة: اكتب <code>انهاء</code>.",
-         reply_kb())
+def notify_admin(msg):
+    if not ADMIN_CHAT_ID: return
+    try:
+        tg("sendMessage", {"chat_id": int(ADMIN_CHAT_ID), "text": msg})
+    except: pass
 
-def ai_handle(chat_id, uid, user_text):
-    if crisis_guard(user_text):
-        send(chat_id, "سلامتك أهم. إن راودتك أفكار لإيذاء نفسك فاتصل بالطوارئ فورًا أو تحدث لشخص موثوق.", reply_kb()); return
-    msgs = AI_SESS.get(uid) or [{"role":"system","content":SYSTEM_PROMPT}]
-    msgs = msgs[-16:]
-    msgs.append({"role":"user","content": user_text})
-    # محاولة مع تقليل المدى إن لزم
-    for mt in (220, 140, 96, 64):
-        try:
-            reply = ai_call(msgs, max_tokens=mt)
-            msgs.append({"role":"assistant","content":reply})
-            AI_SESS[uid] = msgs[-18:]
-            send(chat_id, reply, reply_kb())
-            return
-        except RuntimeError as e:
-            if "CREDITS:402" in str(e):
-                continue  # جرّب بمدى أصغر
-            send(chat_id, f"تعذَّر الاتصال بالذكاء الاصطناعي.\n{e}", reply_kb())
-            return
-    send(chat_id,
-         "يبدو أن الرصيد قليل، حاول رسالة أقصر أو اشحن رصيد OpenRouter.\n"
-         "تم تقليل طول الردود تلقائيًا.", reply_kb())
-
-def ai_end(chat_id, uid):
-    AI_SESS.pop(uid, None)
-    send(chat_id, "تم إنهاء جلسة عربي سايكو ✅", reply_kb())
-
-# ========= المسارات =========
+# ============ المسارات ============
 @app.get("/")
-def home():
+def root():
     return jsonify({
-        "app": "Arabi Psycho Telegram Bot",
+        "app": "Arabi Psycho",
         "public_url": RENDER_EXTERNAL_URL,
-        "webhook": f"/webhook/{WEBHOOK_SECRET[:3]}*****",
-        "ai_ready": ai_ready()
+        "webhook": f"/webhook/{WEBHOOK_SECRET[:3]}*****"
     })
 
 @app.get("/setwebhook")
-def set_hook():
+def setwebhook():
     if not RENDER_EXTERNAL_URL:
-        return jsonify({"ok": False, "error": "RENDER_EXTERNAL_URL not set"}), 400
+        return {"ok": False, "error":"RENDER_EXTERNAL_URL not set"}, 400
     url = f"{RENDER_EXTERNAL_URL}/webhook/{WEBHOOK_SECRET}"
-    res = requests.post(f"{BOT_API}/setWebhook", json={"url": url}, timeout=15)
-    return res.json(), res.status_code
+    r = requests.post(f"{BOT_API}/setWebhook", json={"url": url}, timeout=15)
+    return r.json(), r.status_code
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook():
     upd = request.get_json(force=True, silent=True) or {}
 
-    # === أزرار كولباك ===
+    # ــ أزرار داخلية
     if "callback_query" in upd:
         cq = upd["callback_query"]; data = cq.get("data","")
-        chat_id = cq["message"]["chat"]["id"]; uid = cq["from"]["id"]
+        cid = cq["message"]["chat"]["id"]; uid = cq["from"]["id"]
 
         if data.startswith("t:"):
             key = data.split(":",1)[1]
-            if key in TESTS: start_test(chat_id, uid, key)
-            else: send(chat_id, "اختبار غير معروف.", reply_kb())
+            if key in TESTS:
+                start_test(cid, uid, key)
+            else:
+                send(cid, "اختبار غير معروف.", menu_kb())
             return "ok", 200
 
         if data.startswith("a"):
             try:
                 idx = int(data[1:])
-                record_answer(chat_id, uid, idx)
-            except: send(chat_id, "إجابة غير صالحة.", reply_kb())
+                record_answer(cid, uid, idx)
+            except:
+                send(cid, "إجابة غير صالحة.", menu_kb())
             return "ok", 200
 
-        if data.startswith("c:"):
-            code = data.split(":",1)[1]
-            cbt_send(chat_id, code); return "ok", 200
-
-        if data.startswith("ed:"):
-            topic = data.split(":",1)[1]
-            send(chat_id, f"<b>{topic}</b>\n{EDU.get(topic,'')}", reply_kb()); return "ok", 200
-
-        if data.startswith("dx:"):
-            # تشخيص تعليمي
-            ans = data.split(":",1)[1]
-            step = int(ans[-1])
-            yes = {"y":True,"n":False}[ans[0]]
-            # خزّن الإجابات
-            store = getattr(diag_next, "_ans", {})
-            user = store.get(uid, {})
-            user[step] = (ans[0]=="y")
-            store[uid]=user
-            setattr(diag_next, "_ans", store)
-            diag_next(chat_id, uid, step, user)
+        if data.startswith("cbt:"):
+            title = data.split(":",1)[1]
+            cbt_send(cid, title)
             return "ok", 200
 
         return "ok", 200
 
-    # === رسائل ===
+    # ــ رسائل عادية
     msg = upd.get("message") or upd.get("edited_message") or {}
     if not msg: return "ok", 200
-    chat_id = msg["chat"]["id"]
+    cid = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
-    norm = text.replace("أ","ا").replace("إ","ا").replace("آ","ا").lower()
-    uid = msg.get("from",{}).get("id")
+    low  = text.replace("أ","ا").replace("إ","ا").replace("آ","ا").lower()
+    uid  = msg.get("from",{}).get("id")
 
-    # أوامر مساعدة
-    if is_cmd(text,"start"):
-        send(chat_id, "مرحبًا! كيف نبدأ اليوم؟ إليك بعض الخيارات:\n"
-                      "1) <b>التعامل مع القلق:</b> ناقش موقفك وسنساعدك في تحليل الأفكار.\n"
-                      "2) <b>تحسين المزاج:</b> تمارين سلوكية بسيطة.\n\n" + ABOUT,
-             reply_kb()); return "ok", 200
-    if is_cmd(text,"menu"):
-        send(chat_id, "القائمة:", reply_kb()); return "ok", 200
-    if is_cmd(text,"help"):
-        send(chat_id, HELP, reply_kb()); return "ok", 200
-    if is_cmd(text,"tests"):
-        tests_menu(chat_id); return "ok", 200
-    if is_cmd(text,"cbt"):
-        cbt_menu(chat_id); return "ok", 200
-    if is_cmd(text,"whoami"):
-        uid2 = msg.get("from",{}).get("id")
-        send(chat_id, f"chat_id: {chat_id}\nuser_id: {uid2}", reply_kb()); return "ok", 200
-
-    # جلسة الذكاء الاصطناعي نشطة؟
-    if uid in AI_SESS and norm != "انهاء":
-        ai_handle(chat_id, uid, text); return "ok", 200
-    if uid in AI_SESS and norm == "انهاء":
-        ai_end(chat_id, uid); return "ok", 200
-
-    # أزرار القاع بالنص
-    if "اختبارات" in text:   tests_menu(chat_id); return "ok", 200
-    if "العلاج السلوكي" in text: cbt_menu(chat_id); return "ok", 200
-    if "التثقيف" in text:     edu_menu(chat_id); return "ok", 200
-    if "نوم" == norm or text=="نوم":
-        send(chat_id, THERAPY["sleep"], reply_kb()); return "ok", 200
-    if "حزن" in text:
-        send(chat_id, THERAPY["sad"], reply_kb()); return "ok", 200
-    if "تنفس" in norm or "تنفّس" in text:
-        send(chat_id, THERAPY["breath"], reply_kb()); return "ok", 200
-    if text in ("قلق","اكتب قلق"):
-        send(chat_id, "لإدارة القلق: جرّب تنفّس 4-7-8، ونظّم نومك. خذ <b>GAD-7</b> من «اختبارات».", reply_kb()); return "ok", 200
-    if text in ("اكتئاب","اكتب اكتئاب"):
-        send(chat_id, "لتحسين المزاج: التنشيط السلوكي + تواصل اجتماعي. خذ <b>PHQ-9</b> من «اختبارات».", reply_kb()); return "ok", 200
-    if "عربي سايكو" in text and "عن" not in text:
-        ai_start(chat_id, uid); return "ok", 200
-    if "عن عربي سايكو" in text:
-        send(chat_id, ABOUT, reply_kb()); return "ok", 200
-    if "تشخيص تعليمي" in text:
-        diag_start(chat_id, uid); return "ok", 200
-    if "مساعدة" in text:
-        send(chat_id, HELP + "\n\n" + ABOUT, reply_kb()); return "ok", 200
-    if "تواصل" in text:
-        send(chat_id, "تم تسجيل طلب تواصل ✅ سنرجع لك قريبًا." + (f"\nالهاتف: {CONTACT_PHONE}" if CONTACT_PHONE else ""), reply_kb())
-        if ADMIN_CHAT_ID:
-            user = msg.get("from", {})
-            username = user.get("username") or (user.get("first_name","")+" "+user.get("last_name","")).strip() or "مستخدم"
-            info = (f"📩 <b>طلب تواصل</b>\n"
-                    f"👤 {username} (id={uid})\n"
-                    f"💬 الرسالة: {text}")
-            send(ADMIN_CHAT_ID, info, reply_kb())
+    # أوامر
+    if is_cmd(text, "start") or is_cmd(text, "menu") or text == "❓ مساعدة":
+        send(cid, INTRO, menu_kb());  return "ok", 200
+    if is_cmd(text, "tests") or text == "🧪 اختبارات":
+        tests_menu(cid); return "ok", 200
+    if is_cmd(text, "cbt") or text == "🧠 العلاج السلوكي":
+        cbt_menu(cid); return "ok", 200
+    if text == "📊 تشخيص مبدئي":
+        send(cid, triage_text(), menu_kb()); return "ok", 200
+    if text == "📚 تثقيف نفسي":
+        send(cid, EDU, menu_kb()); return "ok", 200
+    if text == "📞 تواصل":
+        send(cid, contact_text(), menu_kb())
+        notify_admin(f"طلب تواصل من user_id={uid} chat_id={cid}")
         return "ok", 200
 
-    # افتراضي: رد ترحيبي بسيط
-    send(chat_id, "اكتب «القائمة» أو استخدم الأزرار بالأسفل.", reply_kb())
+    # جلسة اختبار نشطة؟
+    if uid in SESS:
+        send(cid, "استخدم الأزرار للإجابة على السؤال الحالي.", menu_kb()); return "ok", 200
+
+    # افتراضي
+    send(cid, "اكتب /menu لإظهار القائمة.", menu_kb())
     return "ok", 200
 
-
-# ====== تشغيل محلي (اختياري) ======
+# ============ تشغيل محلي ============
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
