@@ -1,4 +1,5 @@
 # app.py — عربي سايكو: AI Chat + CBT + اختبارات + اضطرابات الشخصية + تسعيرة (PTB v21)
+
 # Python 3.10+
 
 import os, re, asyncio
