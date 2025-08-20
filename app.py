@@ -20,7 +20,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arabi-psycho")
 
-VERSION = "2025-08-20.1"
+VERSION = "2025-08-20.2"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -35,8 +35,13 @@ AI_MODEL    = os.getenv("AI_MODEL", "openai/gpt-4o-mini").strip()
 CONTACT_THERAPIST_URL    = os.getenv("CONTACT_THERAPIST_URL", "")
 CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "")
 
-# تشغيل Webhook لو PUBLIC_URL مٌضبّط، وإلا Polling
-PUBLIC_URL = os.getenv("PUBLIC_URL") or os.getenv("WEBHOOK_URL")
+# تشغيل Webhook لو PUBLIC_URL مٌضبّط، أو Polling خلاف ذلك
+PUBLIC_URL = (
+    os.getenv("PUBLIC_URL")
+    or os.getenv("WEBHOOK_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")  # Render يضبطه تلقائيًا
+)
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "psi123")  # لا تستخدم التوكن في المسار
 PORT = int(os.getenv("PORT", "10000"))
 
 # ===== أدوات مساعدة =====
@@ -166,7 +171,7 @@ async def ai_respond(text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
     context.user_data["ai_hist"] = hist[-20:]
     return reply
 
-# ===== نصوص CBT (مبسّطة ومغذّية) =====
+# ===== نصوص CBT =====
 CBT_TXT = {
     "about": (
         "🔹 ما هو CBT؟\n"
@@ -222,7 +227,7 @@ class Survey:
 def survey_prompt(s: Survey, i: int) -> str:
     return f"({i+1}/{len(s.items)}) {s.items[i]}\n{ s.scale }"
 
-# بنوك الأسئلة (مختصرة بالعربية)
+# بنوك الأسئلة
 PHQ9 = Survey("phq9","PHQ-9 — الاكتئاب",
     ["قلة الاهتمام/المتعة","الإحباط/اليأس","مشاكل النوم","التعب/قلة الطاقة","تغيّر الشهية",
      "الشعور بالسوء عن النفس","صعوبة التركيز","بطء/توتر ملحوظ","أفكار بإيذاء النفس"],
@@ -292,7 +297,7 @@ K10 = Survey("k10","K10 — الضيق النفسي (آخر 4 أسابيع)",
      "لا تستطيع الهدوء؟","حزين بشدة؟","لا شيء يفرحك؟","لا تحتمل أي تأخير؟","شعور بلا قيمة؟"],
     "1=أبدًا،2=قليلًا،3=أحيانًا،4=غالبًا،5=دائمًا",1,5)
 
-# ===== اضطرابات الشخصية (محتوى كامل) =====
+# ===== اضطرابات الشخصية =====
 PD_TEXT = (
     "🧩 اضطرابات الشخصية — DSM-5 (عناقيد A/B/C)\n\n"
     "A (غريبة/شاذة): الزورية، الفُصامية/الانعزالية، الفُصامية الشكل.\n"
@@ -437,6 +442,7 @@ async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("اختر وحدة من القائمة:", reply_markup=CBT_KB);  return CBT_MENU
 
+# كان يبلع الرسائل: أصلحناه ليمرّر لِـ cbt_router إن لم نكن بانتظار لائحة الأنشطة
 async def cbt_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("ba_wait"):
         context.user_data["ba_wait"] = False
@@ -444,7 +450,9 @@ async def cbt_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = "خطة اليوم:\n• " + "\n• ".join(parts[:3] or ["نشاط بسيط 10–20 دقيقة الآن."])
         await update.message.reply_text(plan + "\nقيّم مزاجك قبل/بعد 0–10.")
         await update.message.reply_text("رجوع لقائمة CBT:", reply_markup=CBT_KB)
-    return CBT_MENU
+        return CBT_MENU
+    # مرّر بقية النصوص إلى الراوتر
+    return await cbt_router(update, context)
 
 # ===== سجل الأفكار =====
 async def tr_situ(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -486,6 +494,11 @@ async def tr_rerate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CBT_MENU
 
 # ===== التعرّض =====
+@dataclass
+class ExposureState:
+    suds: Optional[int] = None
+    plan: Optional[str] = None
+
 async def expo_wait(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n = to_int(update.message.text or "")
     if n is None or not (0 <= n <= 10):
@@ -521,7 +534,7 @@ async def expo_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "expo_rate":  await q.edit_message_text("أرسل الدرجة الجديدة 0–10.");  return EXPO_WAIT
     return EXPO_FLOW
 
-# ===== اختبارات ثنائية نعم/لا (حالات خاصة) =====
+# ===== اختبارات ثنائية نعم/لا =====
 @dataclass
 class BinState:
     i: int = 0
@@ -686,8 +699,7 @@ def main():
             MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
 
             CBT_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),  # يصلّح البلع
             ],
 
             TH_SITU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
@@ -726,8 +738,8 @@ def main():
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path=f"{BOT_TOKEN}",
-            webhook_url=f"{PUBLIC_URL.rstrip('/')}/{BOT_TOKEN}",
+            url_path=WEBHOOK_SECRET,
+            webhook_url=f"{PUBLIC_URL.rstrip('/')}/{WEBHOOK_SECRET}",
             drop_pending_updates=True
         )
     else:
