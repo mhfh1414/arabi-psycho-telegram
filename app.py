@@ -7,79 +7,52 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
 import httpx
-from flask import Flask, request, jsonify
+from flask import Flask, request
 
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
 
-# ====== Logs ======
+# ================= Logs =================
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
 log = logging.getLogger("arabi-psycho")
 
-# ====== ENV ======
+# ================= ENV =================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
-PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-WEBHOOK_PATH = "/webhook/secret"
-
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-AI_API_KEY  = os.getenv("AI_API_KEY", "")
-AI_MODEL    = os.getenv("AI_MODEL", "openrouter/auto")
-
-CONTACT_THERAPIST_URL   = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/your_therapist")
-CONTACT_PSYCHIATRIST_URL= os.getenv("CONTACT_PSYCHIATRIST_URL", "https://t.me/your_psychiatrist")
-
 if not BOT_TOKEN:
     raise RuntimeError("✖ TELEGRAM_BOT_TOKEN مفقود في Environment")
 
-# ====== Flask (لـ gunicorn) ======
+PUBLIC_URL = (os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+WEBHOOK_PATH = "/webhook/secret"
+
+# توافق مع أي مزود (OpenRouter افتراضيًا)
+AI_BASE_URL = (os.getenv("AI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+AI_API_KEY  = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+AI_MODEL    = os.getenv("AI_MODEL", "openrouter/auto")
+
+CONTACT_THERAPIST_URL    = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/your_therapist")
+CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "https://t.me/your_psychiatrist")
+
+# ================= Flask (لـ gunicorn) =================
 app = Flask(__name__)
 
 @app.get("/")
 def health():
     return "Arabi Psycho OK"
 
-# ====== Telegram Application + Loop خلفي ======
+# ================= Telegram Application =================
 tg_app: Application = Application.builder().token(BOT_TOKEN).build()
-_event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
 
-def _bot_loop():
-    asyncio.set_event_loop(_event_loop)
-    async def _startup():
-        await tg_app.initialize()
-        await tg_app.start()
-        if PUBLIC_URL:
-            hook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
-            await tg_app.bot.set_webhook(url=hook_url, drop_pending_updates=True)
-            log.info(f"✓ Webhook set: {hook_url}")
-        else:
-            log.warning("PUBLIC_URL/RENDER_EXTERNAL_URL غير محدد؛ لن يتم تعيين Webhook.")
-    _event_loop.run_until_complete(_startup())
-    _event_loop.run_forever()
-
-threading.Thread(target=_bot_loop, daemon=True).start()
-
-@app.post(WEBHOOK_PATH)
-def webhook():
-    """تسلّم تحديث تيليجرام وتدفعه إلى PTB داخل الـ loop الخلفي."""
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, tg_app.bot)
-        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _event_loop)
-    except Exception as e:
-        log.exception("webhook error: %s", e)
-        return "error", 500
-    return "ok"
-
-# ====== أدوات مساعدة ======
+# -------- أدوات مساعدة عامة --------
 AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
 EN_DIGITS = "0123456789"
 TRANS = str.maketrans(AR_DIGITS, EN_DIGITS)
@@ -104,7 +77,7 @@ async def send_long(chat, text, kb=None):
     for i in range(0, len(text), chunk):
         await chat.send_message(text[i:i+chunk], reply_markup=kb if i+chunk >= len(text) else None)
 
-# ====== لوحات رئيسية ======
+# -------- لوحات --------
 TOP_KB = ReplyKeyboardMarkup(
     [
         ["عربي سايكو 🧠"],
@@ -134,7 +107,7 @@ TESTS_KB = ReplyKeyboardMarkup(
 )
 AI_CHAT_KB = ReplyKeyboardMarkup([["◀️ إنهاء جلسة عربي سايكو"]], resize_keyboard=True)
 
-# ====== حالات المحادثة ======
+# -------- حالات --------
 MENU, CBT_MENU, TESTS_MENU = range(3)
 THOUGHT_SITU, THOUGHT_EMO, THOUGHT_AUTO, THOUGHT_FOR, THOUGHT_AGAINST, THOUGHT_ALTERN, THOUGHT_RERATE = range(10,17)
 EXPO_WAIT_RATING, EXPO_FLOW = range(20,22)
@@ -143,7 +116,7 @@ PANIC_Q = 40
 PTSD_Q = 50
 AI_CHAT = 60
 
-# ====== نصوص CBT ======
+# -------- نصوص CBT --------
 CBT_TXT = {
     "about": (
         "🔹 **ما هو CBT؟**\n"
@@ -167,7 +140,7 @@ CBT_TXT = {
     "sleep": "🛌 **بروتوكول النوم**: استيقاظ ثابت، السرير للنوم فقط، لا تبقَ >20 دقيقة مستيقظًا بالسرير، خفّف منبّهات، أوقف الشاشات قبل ساعة.",
 }
 
-# ====== تمارين CBT ======
+# -------- تمارين CBT --------
 @dataclass
 class ThoughtRecord:
     situation: str = ""
@@ -184,7 +157,7 @@ class ExposureState:
     suds: Optional[int] = None
     plan: Optional[str] = None
 
-# ====== استبيانات ======
+# -------- استبيانات --------
 @dataclass
 class Survey:
     id: str
@@ -257,16 +230,16 @@ TEST_BANK: Dict[str, Dict[str, Any]] = {
                               "قيّم 1–7 (1=لا تنطبق…7=تنطبق تمامًا)", 1, 7, reverse=TIPI_REVERSE)},
 }
 
-# ====== اضطرابات الشخصية + التحويل ======
+# -------- اضطرابات الشخصية + التحويل --------
 PD_TEXT = (
     "🧩 **اضطرابات الشخصية — DSM-5 (العناقيد)**\n"
     "**A (غريبة/شاذة):** الزورية، الفُصامية/الانعزالية، الفُصامية الشكل.\n"
     "**B (درامية/اندفاعية):** المعادية للمجتمع، الحدّية، الهستيرية، النرجسية.\n"
     "**C (قلِقة/خائفة):** التجنبية، الاتكالية، الوسواسية القهرية للشخصية.\n\n"
-    "ℹ️ للتثقيف فقط—not تشخيص. اطلب تقييمًا عند تأثير واضح على الحياة."
+    "ℹ️ للتثقيف فقط — ليس تشخيصًا. اطلب تقييمًا عند تأثير واضح على الحياة."
 )
 
-# ====== ذكاء اصطناعي عبر OpenRouter ======
+# -------- ذكاء اصطناعي عبر OpenRouter --------
 AI_SYSTEM_PROMPT = (
     "أنت «عربي سايكو»، مساعد نفسي عربي يعتمد مبادئ CBT.\n"
     "- تحدث بلطف وبالعربية المبسطة.\n"
@@ -282,7 +255,6 @@ async def ai_complete(messages: List[Dict[str, str]]) -> str:
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
         "Content-Type": "application/json",
-        # حقول اختيارية توصي بها OpenRouter
         "HTTP-Referer": PUBLIC_URL or "https://render.com",
         "X-Title": "Arabi Psycho",
     }
@@ -312,7 +284,7 @@ async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
     context.user_data["ai_history"] = hist[-20:]
     return reply
 
-# ====== أوامر عامة ======
+# ================= أوامر عامة =================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(
         "مرحبًا! أنا **عربي سايكو**. ابدأ جلسة الذكاء الاصطناعي أو ادخل على CBT والاختبارات.",
@@ -333,7 +305,7 @@ async def cmd_ai_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model   = AI_MODEL or "-"
     await update.message.reply_text(f"AI_BASE_URL set={base_ok} | KEY set={key_ok} | MODEL={model}")
 
-# ====== مستوى علوي (أزرار) ======
+# ================= مستوى علوي (أزرار) =================
 async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.strip()
 
@@ -373,14 +345,15 @@ async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
     return MENU
 
-# ====== جلسة AI ======
+# ================= جلسة AI =================
 async def start_ai_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     if q.data == "ai_dsm":
-        await q.message.reply_text("أكتب شكواك وسأقيّمها استرشاديًا وفق DSM-5 (غير طبي).")
+        await q.message.reply_text("اكتب شكواك وسأقيّمها استرشاديًا وفق DSM-5 (غير طبي).")
     context.user_data["ai_history"] = []
     await q.message.reply_text(
-        "بدأت جلسة **عربي سايكو**. أكتب شكواك الآن.\nلإنهاء الجلسة: «◀️ إنهاء جلسة عربي سايكو».",
+        "بدأت جلسة **عربي سايكو**. اكتب شكواك الآن.\nلإنهاء الجلسة: «◀️ إنهاء جلسة عربي سايكو».",
         reply_markup=AI_CHAT_KB
     )
     return AI_CHAT
@@ -390,12 +363,16 @@ async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
         await update.message.reply_text("انتهت الجلسة. رجوع للقائمة.", reply_markup=TOP_KB)
         return MENU
-    await update.effective_chat.send_chat_action(action="typing")
+    # إظهار حالة الكتابة بطريقة متوافقة مع v21
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    except Exception:
+        pass
     reply = await ai_respond(text, context)
     await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
     return AI_CHAT
 
-# ====== CBT Router ======
+# ================= CBT Router =================
 async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.strip()
     if t == "◀️ رجوع":
@@ -445,7 +422,7 @@ async def cbt_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CBT_MENU
     return CBT_MENU
 
-# سجل الأفكار
+# ===== سجل الأفكار =====
 async def tr_situ(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tr: ThoughtRecord = context.user_data["tr"]; tr.situation = update.message.text.strip()
     await update.message.reply_text("ما الشعور الأساسي الآن؟ وقيّمه 0–10 (مثال: قلق 7/10)."); return THOUGHT_EMO
@@ -487,7 +464,7 @@ async def tr_rerate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر من قائمة CBT:", reply_markup=CBT_KB)
     return CBT_MENU
 
-# التعرض
+# ===== التعرض =====
 async def expo_receive_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n = to_int(update.message.text)
     if n is None or not (0 <= n <= 10):
@@ -523,7 +500,7 @@ async def expo_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("أرسل الدرجة الجديدة (0–10)."); return EXPO_WAIT_RATING
     return EXPO_FLOW
 
-# ====== الاختبارات ======
+# ================= الاختبارات =================
 @dataclass
 class PanicState:
     i: int = 0
@@ -622,7 +599,7 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(msg, reply_markup=TESTS_KB);  return TESTS_MENU
         if s.id == "tipi":
             vals = s.answers[:]
-            for i in s.reverse: vals[i] = 8 - vals[i]  # عكس البنود 1..7
+            for i in s.reverse: vals[i] = 8 - vals[i]
             extr = (vals[0] + vals[5]) / 2
             agre = (vals[1] + vals[6]) / 2
             cons = (vals[2] + vals[7]) / 2
@@ -643,40 +620,45 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["survey_idx"] = idx
     await update.message.reply_text(survey_prompt(s, idx)); return SURVEY_ACTIVE
 
-# ====== Fallback ======
+# ================= Fallback =================
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
     return MENU
 
-# ====== ربط Handlers ======
+# ================= ربط Handlers =================
 def _register_handlers():
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start), CommandHandler("help", cmd_help)],
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CommandHandler("help", cmd_help),
+            CommandHandler("ai_diag", cmd_ai_diag),
+        ],
         states={
             MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
+
             CBT_MENU: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
             ],
-            THOUGHT_SITU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
-            THOUGHT_EMO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
-            THOUGHT_AUTO:   [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
-            THOUGHT_FOR:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
-            THOUGHT_AGAINST:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
-            THOUGHT_ALTERN: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_altern)],
-            THOUGHT_RERATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
+            THOUGHT_SITU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
+            THOUGHT_EMO:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
+            THOUGHT_AUTO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
+            THOUGHT_FOR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
+            THOUGHT_AGAINST: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
+            THOUGHT_ALTERN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_altern)],
+            THOUGHT_RERATE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
 
             EXPO_WAIT_RATING: [MessageHandler(filters.TEXT & ~filters.COMMAND, expo_receive_rating)],
             EXPO_FLOW: [
-                CallbackQueryHandler(expo_cb, pattern="^expo_(suggest|help)$"),
+                CallbackQueryHandler(expo_cb,     pattern=r"^expo_(suggest|help)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, expo_free_text),
-                CallbackQueryHandler(expo_actions, pattern="^expo_(start|rate)$"),
+                CallbackQueryHandler(expo_actions, pattern=r"^expo_(start|rate)$"),
             ],
 
-            TESTS_MENU:   [MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
-            SURVEY_ACTIVE:[MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
-            PANIC_Q:      [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
-            PTSD_Q:       [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
+            TESTS_MENU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+            SURVEY_ACTIVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+            PANIC_Q:       [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
+            PTSD_Q:        [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
 
             AI_CHAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
         },
@@ -685,13 +667,39 @@ def _register_handlers():
     )
 
     tg_app.add_handler(conv)
-    tg_app.add_handler(CallbackQueryHandler(start_ai_cb, pattern="^(start_ai|ai_dsm)$"))
-    tg_app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
+    tg_app.add_handler(CallbackQueryHandler(start_ai_cb, pattern=r"^(start_ai|ai_dsm)$"))
 
 _register_handlers()
 
-# ====== تشغيل Flask محليًا (اختياري) ======
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8080"))
-    log.info(f"Serving Flask on 0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port)
+# ================= تشغيل PTB داخل Thread و Webhook =================
+_event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+
+def _bot_loop():
+    asyncio.set_event_loop(_event_loop)
+
+    async def _startup():
+        await tg_app.initialize()
+        await tg_app.start()
+        if PUBLIC_URL:
+            hook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
+            await tg_app.bot.set_webhook(url=hook_url, drop_pending_updates=True)
+            log.info(f"✓ Webhook set: {hook_url}")
+        else:
+            log.warning("RENDER_EXTERNAL_URL غير محدد؛ لن يتم تعيين Webhook.")
+
+    _event_loop.run_until_complete(_startup())
+    _event_loop.run_forever()
+
+threading.Thread(target=_bot_loop, daemon=True).start()
+
+@app.post(WEBHOOK_PATH)
+def webhook():
+    """تسلّم تحديث تيليجرام وتدفعه إلى PTB داخل الـ loop الخلفي."""
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, tg_app.bot)
+        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _event_loop)
+    except Exception as e:
+        log.exception("webhook error: %s", e)
+        return "error", 500
+    return "ok"
