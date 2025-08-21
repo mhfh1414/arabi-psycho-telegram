@@ -647,34 +647,53 @@ def _register_handlers():
 _register_handlers()
 
 # ================= تشغيل PTB داخل Thread و Webhook =================
-_event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
 
-def _bot_loop():
-    asyncio.set_event_loop(_event_loop)
+# ====== ربط Handlers ======
+def _register_handlers():
+    conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CommandHandler("help", cmd_help),
+            CommandHandler("ai_diag", cmd_ai_diag),
+        ],
+        states={
+            MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
 
-    async def _startup():
-        await tg_app.initialize()
-        await tg_app.start()
-        if PUBLIC_URL:
-            hook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
-            await tg_app.bot.set_webhook(url=hook_url, drop_pending_updates=True)
-            log.info(f"✓ Webhook set: {hook_url}")
-        else:
-            log.warning("RENDER_EXTERNAL_URL غير محدد؛ لن يتم تعيين Webhook.")
+            CBT_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
+            ],
+            THOUGHT_SITU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
+            THOUGHT_EMO:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
+            THOUGHT_AUTO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
+            THOUGHT_FOR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
+            THOUGHT_AGAINST: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
+            THOUGHT_ALTERN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_altern)],
+            THOUGHT_RERATE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
 
-    _event_loop.run_until_complete(_startup())
-    _event_loop.run_forever()
+            EXPO_WAIT_RATING: [MessageHandler(filters.TEXT & ~filters.COMMAND, expo_receive_rating)],
+            EXPO_FLOW: [
+                CallbackQueryHandler(expo_cb, pattern=r"^expo_(suggest|help)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, expo_free_text),
+                CallbackQueryHandler(expo_actions, pattern=r"^expo_(start|rate)$"),
+            ],
 
-threading.Thread(target=_bot_loop, daemon=True).start()
+            TESTS_MENU:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+            SURVEY_ACTIVE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+            PANIC_Q:        [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
+            PTSD_Q:         [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
 
-@app.post(WEBHOOK_PATH)
-def webhook():
-    """تسلّم تحديث تيليجرام وتدفعه إلى PTB داخل الـ loop الخلفي."""
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, tg_app.bot)
-        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _event_loop)
-    except Exception as e:
+            AI_CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
+        },
+        fallbacks=[MessageHandler(filters.ALL, fallback)],
+        allow_reentry=True,
+    )
+
+    tg_app.add_handler(conv)
+    # زر “ابدأ جلسة عربي سايكو” و “DSM-5”
+    tg_app.add_handler(CallbackQueryHandler(start_ai_cb, pattern=r"^(start_ai|ai_dsm)$"))
+
+_register_handlers()
         log.exception("webhook error: %s", e)
         return "error", 500
     return "ok"
