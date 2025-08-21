@@ -1,7 +1,7 @@
 # app.py — عربي سايكو (Render + Telegram Webhook + OpenRouter)
 # Python 3.10+ | python-telegram-bot v21
 # تشغيل على Render مع: gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
-
+from telegram.constants import ChatAction
 import os, re, json, asyncio, logging, threading
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
@@ -240,49 +240,24 @@ PD_TEXT = (
 )
 
 # -------- ذكاء اصطناعي عبر OpenRouter --------
-AI_SYSTEM_PROMPT = (
-    "أنت «عربي سايكو»، مساعد نفسي عربي يعتمد مبادئ CBT.\n"
-    "- تحدث بلطف وبالعربية المبسطة.\n"
-    "- ساعد في تنظيم الأفكار، تمارين قصيرة، وتطبيع المشاعر.\n"
-    "- لا تقدم تشخيصًا طبيًا أو أدوية. عند خطر فوري وجّه لطلب مساعدة عاجلة.\n"
-    "- اختم بتلخيص قصير وخطوة عملية واحدة."
-)
+# ====== جلسة AI: الرد داخل الجلسة ======
+from telegram.constants import ChatAction  # تأكد أن هذا السطر موجود أعلى الملف مع الاستيرادات
 
-async def ai_complete(messages: List[Dict[str, str]]) -> str:
-    """نداء OpenRouter /chat/completions"""
-    if not AI_API_KEY:
-        return "(الذكاء الاصطناعي غير مفعّل: AI_API_KEY مفقود)"
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": PUBLIC_URL or "https://render.com",
-        "X-Title": "Arabi Psycho",
-    }
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": 600,
-    }
-    url = f"{AI_BASE_URL}/chat/completions"
+async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
+        await update.message.reply_text("انتهت الجلسة. رجوع للقائمة.", reply_markup=TOP_KB)
+        return MENU
+
+    # PTB v21: الطريقة الصحيحة لإرسال حالة الكتابة
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        log.exception("AI error")
-        return f"(تعذّر توليد الرد: {e})"
+        await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
 
-async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
-    hist: List[Dict[str, str]] = context.user_data.get("ai_history", [])
-    hist = hist[-20:]
-    convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [{"role": "user", "content": user_text}]
-    reply = await ai_complete(convo)
-    hist += [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
-    context.user_data["ai_history"] = hist[-20:]
-    return reply
+    reply = await ai_respond(text, context)
+    await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
+    return AI_CHAT
 
 # ================= أوامر عامة =================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
