@@ -697,3 +697,67 @@ _register_handlers()
         log.exception("webhook error: %s", e)
         return "error", 500
     return "ok"
+# ====== Fallback ======
+async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
+    return MENU
+
+# ====== جلسة AI: الرد داخل الجلسة ======
+async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
+        await update.message.reply_text("انتهت الجلسة. رجوع للقائمة.", reply_markup=TOP_KB)
+        return MENU
+    try:
+        await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+    reply = await ai_respond(text, context)
+    await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
+    return AI_CHAT
+
+# ====== ربط Handlers ======
+def _register_handlers():
+    conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CommandHandler("help", cmd_help),
+            CommandHandler("ai_diag", cmd_ai_diag),
+        ],
+        states={
+            MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
+
+            CBT_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
+            ],
+            THOUGHT_SITU:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
+            THOUGHT_EMO:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
+            THOUGHT_AUTO:    [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
+            THOUGHT_FOR:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
+            THOUGHT_AGAINST: [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
+            THOUGHT_ALTERN:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_altern)],
+            THOUGHT_RERATE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
+
+            EXPO_WAIT_RATING: [MessageHandler(filters.TEXT & ~filters.COMMAND, expo_receive_rating)],
+            EXPO_FLOW: [
+                CallbackQueryHandler(expo_cb, pattern=r"^expo_(suggest|help)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, expo_free_text),
+                CallbackQueryHandler(expo_actions, pattern=r"^expo_(start|rate)$"),
+            ],
+
+            TESTS_MENU:     [MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+            SURVEY_ACTIVE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+            PANIC_Q:        [MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
+            PTSD_Q:         [MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
+
+            AI_CHAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
+        },
+        fallbacks=[MessageHandler(filters.ALL, fallback)],
+        allow_reentry=True,
+    )
+
+    tg_app.add_handler(conv)
+    tg_app.add_handler(CallbackQueryHandler(start_ai_cb, pattern=r"^(start_ai|ai_dsm)$"))
+
+_register_handlers()
