@@ -1,16 +1,18 @@
-# app.py — Webhook smoke test (Render + Telegram)
-import os, asyncio, logging, threading
+# app.py — Webhook deep debug (Render + Telegram)
+import os, json, asyncio, logging, threading
 from flask import Flask, request
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
+# ---------- Logging ----------
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
 )
-log = logging.getLogger("webhook-test")
+log = logging.getLogger("webhook-debug")
 
+# ---------- ENV ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_PATH = "/webhook/secret"
@@ -27,14 +29,13 @@ def health():
 
 # ---------- Telegram ----------
 tg_app: Application = Application.builder().token(BOT_TOKEN).build()
-_event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
 
+# ردود اختبار
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ البوت شغال (Webhook OK). اكتب أي كلمة أشوفها.")
+    await update.message.reply_text("✅ البوت شغال (Webhook OK).")
 
 async def cmd_ai_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    base_ok = "True" if PUBLIC_URL else "False"
-    await update.message.reply_text(f"WEBHOOK = {PUBLIC_URL or '-'} | set={base_ok}")
+    await update.message.reply_text(f"RENDER_EXTERNAL_URL={PUBLIC_URL or '-'}")
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = update.message.text
@@ -47,8 +48,12 @@ def _register_handlers():
 
 _register_handlers()
 
+# نشغّل PTB في لوب مستقل
+_event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+
 def _bot_loop():
     asyncio.set_event_loop(_event_loop)
+
     async def _startup():
         await tg_app.initialize()
         await tg_app.start()
@@ -58,17 +63,27 @@ def _bot_loop():
             log.info(f"✓ Webhook set: {hook_url}")
         else:
             log.warning("RENDER_EXTERNAL_URL is empty; webhook not set.")
+
     _event_loop.run_until_complete(_startup())
     _event_loop.run_forever()
 
 threading.Thread(target=_bot_loop, daemon=True).start()
 
+# ---------- Webhook endpoint ----------
 @app.post(WEBHOOK_PATH)
 def webhook():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=False)
+        # لوق كامل للتحديث
+        log.info("<< UPDATE JSON: %s", json.dumps(data, ensure_ascii=False))
         update = Update.de_json(data, tg_app.bot)
-        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _event_loop)
+        fut = asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _event_loop)
+        # لو صار استثناء داخل الكوروتين يطلع هنا
+        try:
+            fut.result(timeout=5)
+            log.info(">> processed OK")
+        except Exception as e:
+            log.exception("process_update error: %s", e)
     except Exception as e:
         log.exception("webhook error: %s", e)
         return "error", 500
