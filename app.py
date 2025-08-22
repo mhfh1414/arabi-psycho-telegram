@@ -1,7 +1,6 @@
 # app.py — عربي سايكو (Render + Telegram Webhook + OpenRouter)
 # Python 3.11 | python-telegram-bot v21.x
-# Proc command on Render:
-# gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
+# Proc (Render): gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
 
 import os
 import asyncio
@@ -14,9 +13,7 @@ from flask import Flask, request
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes, filters
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ---------------- Logs ----------------
 logging.basicConfig(
@@ -48,6 +45,7 @@ def health():
 tg_app: Application = Application.builder().token(BOT_TOKEN).build()
 _event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
 
+# ---------------- AI ----------------
 AI_SYSTEM_PROMPT = (
     "أنت «عربي سايكو»، مساعد نفسي عربي يعتمد مبادئ CBT.\n"
     "- تحدث بلطف وبالعربية المبسطة.\n"
@@ -57,7 +55,6 @@ AI_SYSTEM_PROMPT = (
 )
 
 async def ai_complete(messages: List[Dict[str, str]]) -> str:
-    """OpenRouter /chat/completions"""
     if not AI_API_KEY:
         return "(الذكاء الاصطناعي غير مفعّل: AI_API_KEY مفقود)"
     headers = {
@@ -66,12 +63,7 @@ async def ai_complete(messages: List[Dict[str, str]]) -> str:
         "HTTP-Referer": PUBLIC_URL or "https://render.com",
         "X-Title": "Arabi Psycho",
     }
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": 600,
-    }
+    payload = {"model": AI_MODEL, "messages": messages, "temperature": 0.4, "max_tokens": 600}
     url = f"{AI_BASE_URL}/chat/completions"
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -84,11 +76,8 @@ async def ai_complete(messages: List[Dict[str, str]]) -> str:
         return f"(تعذّر توليد الرد: {e})"
 
 async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
-    hist = context.user_data.get("ai_history", [])
-    hist = hist[-20:]
-    convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [
-        {"role": "user", "content": user_text}
-    ]
+    hist = context.user_data.get("ai_history", [])[-20:]
+    convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [{"role": "user", "content": user_text}]
     reply = await ai_complete(convo)
     hist += [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
     context.user_data["ai_history"] = hist[-20:]
@@ -104,7 +93,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("استخدم /start ثم جرّب كلمة: عربي سايكو")
+    await update.message.reply_text("اكتب /start ثم جرّب: عربي سايكو")
 
 async def cmd_ai_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     base_ok = "True" if AI_BASE_URL else "False"
@@ -119,13 +108,10 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
 
-    # بدء/إنهاء جلسة AI
     if text.startswith("عربي سايكو"):
         context.user_data["ai_mode"] = True
         context.user_data["ai_history"] = []
-        await update.message.reply_text(
-            "بدأت جلسة **عربي سايكو**.\nاكتب شكواك الآن.\n(أرسل: إنهاء) للخروج."
-        )
+        await update.message.reply_text("بدأت جلسة **عربي سايكو**.\nاكتب شكواك الآن.\n(أرسل: إنهاء) للخروج.")
         return
 
     if text in ("إنهاء", "انهاء", "خروج", "◀️ إنهاء جلسة عربي سايكو"):
@@ -133,12 +119,10 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("انتهت الجلسة. اكتب: عربي سايكو لبدء جلسة جديدة.")
         return
 
-    # كلمة اختبار سريعة
     if text.lower() == "ping":
         await update.message.reply_text("pong ✅")
         return
 
-    # لو الجلسة مفعّلة — رد بالذكاء الاصطناعي
     if context.user_data.get("ai_mode"):
         try:
             await update.effective_chat.send_action(ChatAction.TYPING)
@@ -148,18 +132,14 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # افتراضي
     await update.message.reply_text("اكتب /start ثم اكتب: عربي سايكو")
 
-# ---------------- Register Handlers ----------------
-def _register_handlers():
-    tg_app.add_handler(CommandHandler("start", cmd_start))
-    tg_app.add_handler(CommandHandler("help", cmd_help))
-    tg_app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
-    tg_app.add_handler(CommandHandler("ping", cmd_ping))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-
-_register_handlers()
+# ---------------- Register Handlers (مباشرة) ----------------
+tg_app.add_handler(CommandHandler("start", cmd_start))
+tg_app.add_handler(CommandHandler("help", cmd_help))
+tg_app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
+tg_app.add_handler(CommandHandler("ping", cmd_ping))
+tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
 # ---------------- Webhook Boot Thread ----------------
 def _bot_loop():
@@ -183,7 +163,6 @@ threading.Thread(target=_bot_loop, daemon=True).start()
 # ---------------- Webhook endpoint ----------------
 @app.post(WEBHOOK_PATH)
 def webhook():
-    """Receive Telegram updates and pass to PTB inside background loop."""
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, tg_app.bot)
