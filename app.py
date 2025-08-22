@@ -1,447 +1,250 @@
-# app.py — Arabi Psycho Telegram Bot (Tests + DSM Educational + CBT + Psychoeducation + AI Chat)
-import os, logging, json, sqlite3, re
-from flask import Flask, request, jsonify, g
-import requests
-from datetime import datetime
+# app.py — Arabi Psycho (Render + Telegram Webhook + OpenRouter)
+# Python 3.11 / python-telegram-bot v21
+# Start command on Render:
+# gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
 
-# =============== إعدادات عامة ===============
-# التحقق من المتغيرات البيئية المطلوبة
-required_env_vars = ["TELEGRAM_BOT_TOKEN", "AI_API_KEY", "AI_MODEL"]
-for var in required_env_vars:
-    if not os.environ.get(var):
-        raise RuntimeError(f"Missing required environment variable: {var}")
+import os, re, json, asyncio, logging, threading
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+import httpx
+from flask import Flask, request
 
-WEBHOOK_SECRET      = os.environ.get("WEBHOOK_SECRET", "secret")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
-
-# إشراف وترخيص
-SUPERVISOR_NAME  = os.environ.get("SUPERVISOR_NAME",  "المشرف")
-SUPERVISOR_TITLE = os.environ.get("SUPERVISOR_TITLE", "أخصائي نفسي")
-LICENSE_NO       = os.environ.get("LICENSE_NO",       "—")
-LICENSE_ISSUER   = os.environ.get("LICENSE_ISSUER",   "—")
-CLINIC_URL       = os.environ.get("CLINIC_URL",       "")
-CONTACT_PHONE    = os.environ.get("CONTACT_PHONE",    "")
-
-# إشعارات "تواصل" (اختياري)
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
-
-# مزود الذكاء الاصطناعي (متوافق مع OpenAI)
-AI_BASE_URL = (os.environ.get("AI_BASE_URL", "") or "").rstrip("/")
-AI_API_KEY  = os.environ.get("AI_API_KEY",  "")
-AI_MODEL    = os.environ.get("AI_MODEL",    "")
-
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("arabi-psycho-bot")
-
-# =============== إدارة قاعدة البيانات ===============
-DATABASE = 'sessions.db'
-
-def get_db():
-    """الحصول على اتصال قاعدة البيانات"""
-    if 'db' not in g:
-        g.db = sqlite3.connect(DATABASE, check_same_thread=False)
-        g.db.row_factory = sqlite3.Row
-    return g.db
-
-def init_db():
-    """تهيئة جداول قاعدة البيانات"""
-    db = get_db()
-    
-    # جدول جلسات الذكاء الاصطناعي
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS ai_sessions (
-            user_id INTEGER PRIMARY KEY,
-            messages TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # جدول جلسات الاختبارات
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS test_sessions (
-            user_id INTEGER,
-            test_key TEXT,
-            current_index INTEGER,
-            score INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, test_key)
-        )
-    ''')
-    
-    # جدول جلسات التشخيص التعليمي
-    db.execute('''
-        CREATE TABLE IF NOT EXISTS dsm_sessions (
-            user_id INTEGER,
-            session_key TEXT,
-            data TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, session_key)
-        )
-    ''')
-    
-    db.commit()
-
-@app.teardown_appcontext
-def close_db(error):
-    """إغلاق اتصال قاعدة البيانات"""
-    if hasattr(g, 'db'):
-        g.db.close()
-
-# =============== توابع تيليجرام محسنة ===============
-def tg(method, payload):
-    """إرسال طلب إلى تيليجرام مع معالجة الأخطاء"""
-    try:
-        r = requests.post(f"{BOT_API}/{method}", json=payload, timeout=15)
-        r.raise_for_status()
-        return r
-    except requests.exceptions.RequestException as e:
-        log.error("Telegram API error for %s: %s", method, e)
-        return None
-
-def send(chat_id, text, reply_markup=None, parse_mode="HTML"):
-    """إرسال رسالة مع معالجة الأخطاء"""
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode,
-        "disable_web_page_preview": True
-    }
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    
-    response = tg("sendMessage", payload)
-    if not response or response.status_code != 200:
-        log.error("Failed to send message to chat %s", chat_id)
-    return response
-
-def inline(rows):
-    return {"inline_keyboard": rows}
-
-def reply_kb():
-    """لوحة أزرار سفلية ثابتة"""
-    return {
-        "keyboard": [
-            [{"text":"العلاج السلوكي"}, {"text":"اختبارات"}],
-            [{"text":"التثقيف"}, {"text":"تشخيص تعليمي"}],
-            [{"text":"نوم"}, {"text":"حزن"}],
-            [{"text":"قلق"}, {"text":"اكتئاب"}],
-            [{"text":"تنفّس"}, {"text":"عربي سايكو"}],
-            [{"text":"تواصل"}, {"text":"عن عربي سايكو"}],
-            [{"text":"مساعدة"}],
-        ],
-        "resize_keyboard": True,
-        "is_persistent": True
-    }
-
-def is_cmd(txt, name): 
-    return (txt or "").strip().lower().startswith("/"+name.lower())
-
-def norm_ar(s):
-    return (s or "").replace("أ","ا").replace("إ","ا").replace("آ","ا").strip().lower()
-
-def is_valid_user_input(text):
-    """التحقق من صحة المدخلات"""
-    if not text or len(text) > 1000:
-        return False
-    # منع حقن الأكواد الضارة
-    if any(char in text for char in ['<script>', '<?php', '<?']):
-        return False
-    return True
-
-# =============== سلامة وأزمات ===============
-CRISIS_WORDS = ["انتحار","اذي نفسي","اودي نفسي","اودي ذاتي","قتل نفسي","ما ابغى اعيش"]
-def crisis_guard(text):
-    if not is_valid_user_input(text):
-        return False
-    t = norm_ar(text)
-    return any(w in t for w in CRISIS_WORDS)
-
-# =============== نص النظام للذكاء الاصطناعي ===============
-SYSTEM_PROMPT = (
-    "أنت مساعد نفسي عربي يقدم تثقيفًا ودعمًا عامًّا وتقنيات CBT البسيطة."
-    " تعمل بإشراف {name} ({title})، ترخيص {lic_no} – {lic_issuer}."
-    " هذا البوت ليس بديلًا عن التشخيص أو وصف الأدوية. كن دقيقًا، متعاطفًا، ومختصرًا."
-    " في حال خطر على السلامة وجّه فورًا لطلب مساعدة طبية عاجلة."
-).format(
-    name=SUPERVISOR_NAME, title=SUPERVISOR_TITLE,
-    lic_no=LICENSE_NO, lic_issuer=LICENSE_ISSUER
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from telegram.constants import ChatAction
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
 
-def ai_ready():
-    return bool(AI_BASE_URL and AI_API_KEY and AI_MODEL)
+# ---------- Logging ----------
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+log = logging.getLogger("arabi-psycho")
 
-def ai_call(messages):
-    """الاتصال بالذكاء الاصطناعي مع معالجة الأخطاء"""
-    if not is_valid_user_input(json.dumps(messages)):
-        raise ValueError("Invalid input for AI call")
-    
-    url = AI_BASE_URL + "/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
-    body = {
+# ---------- ENV ----------
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
+PUBLIC_URL = (os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+WEBHOOK_PATH = "/webhook/secret"  # نفس المسار الموجود في Route بالأسفل
+
+AI_BASE_URL = (os.getenv("AI_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/")
+AI_API_KEY  = os.getenv("AI_API_KEY", "")
+AI_MODEL    = os.getenv("AI_MODEL", "openrouter/auto")
+
+CONTACT_THERAPIST_URL    = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/your_therapist")
+CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "https://t.me/your_psychiatrist")
+
+if not BOT_TOKEN:
+    raise RuntimeError("✖ TELEGRAM_BOT_TOKEN مفقود")
+
+# ---------- Flask (لـ gunicorn) ----------
+app = Flask(__name__)
+
+@app.get("/")
+def health():
+    # GET على الجذر يعطي OK — هذا عادي
+    return "Arabi Psycho OK"
+
+# Telegram يرسل POST فقط على الويبهوك — لذلك GET يعطي 405 وهذا طبيعي.
+@app.get(WEBHOOK_PATH)
+def webhook_get_block():
+    return ("Method Not Allowed", 405)
+
+# ---------- Telegram Application (يعمل في Thread منفصل) ----------
+tg_app: Application = Application.builder().token(BOT_TOKEN).build()
+_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+
+def _bot_thread():
+    asyncio.set_event_loop(_loop)
+
+    async def _startup():
+        await tg_app.initialize()
+        await tg_app.start()
+        if PUBLIC_URL:
+            hook = f"{PUBLIC_URL}{WEBHOOK_PATH}"
+            await tg_app.bot.set_webhook(url=hook, drop_pending_updates=True)
+            log.info(f"✓ Webhook set: {hook}")
+        else:
+            log.warning("RENDER_EXTERNAL_URL غير محدد؛ لن يتم تعيين Webhook.")
+
+    _loop.run_until_complete(_startup())
+    _loop.run_forever()
+
+threading.Thread(target=_bot_thread, daemon=True).start()
+
+@app.post(WEBHOOK_PATH)
+def webhook_post():
+    """Telegram سيستدعي هذا بالـ POST. ندفع التحديث للـ PTB loop."""
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, tg_app.bot)
+        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _loop)
+    except Exception as e:
+        log.exception("webhook error: %s", e)
+        return "error", 500
+    return "ok"
+
+# ---------- Helpers ----------
+AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
+EN_DIGITS = "0123456789"
+TRANS = str.maketrans(AR_DIGITS, EN_DIGITS)
+
+def to_int(s: str) -> Optional[int]:
+    try:
+        return int(s.strip().translate(TRANS))
+    except Exception:
+        return None
+
+async def send_long(chat, text, kb=None):
+    chunk = 3500
+    for i in range(0, len(text), chunk):
+        await chat.send_message(text[i:i+chunk], reply_markup=kb if i+chunk >= len(text) else None)
+
+# ---------- Keyboards ----------
+TOP_KB = ReplyKeyboardMarkup(
+    [
+        ["عربي سايكو 🧠"],
+        ["العلاج السلوكي المعرفي (CBT) 💊", "الاختبارات النفسية 📝"],
+        ["اضطرابات الشخصية 🧩", "التحويل الطبي 🩺"],
+    ],
+    resize_keyboard=True
+)
+AI_CHAT_KB = ReplyKeyboardMarkup([["◀️ إنهاء جلسة عربي سايكو"]], resize_keyboard=True)
+
+# ---------- States ----------
+MENU, AI_CHAT = range(2)
+
+# ---------- AI ----------
+AI_SYSTEM_PROMPT = (
+    "أنت «عربي سايكو»، مساعد نفسي عربي يعتمد مبادئ CBT.\n"
+    "- تحدث بلطف وبالعربية المبسطة.\n"
+    "- ساعد في تنظيم الأفكار وتمارين قصيرة.\n"
+    "- لا تشخّص طبيًا ولا تصف أدوية. عند خطر فوري وجّه لطلب مساعدة عاجلة.\n"
+    "- اختم بتلخيص قصير وخطوة عملية واحدة."
+)
+
+async def ai_complete(messages: List[Dict[str, str]]) -> str:
+    if not AI_API_KEY:
+        return "(الذكاء الاصطناعي غير مفعّل: AI_API_KEY مفقود)"
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": PUBLIC_URL or "https://render.com",
+        "X-Title": "Arabi Psycho",
+    }
+    payload = {
         "model": AI_MODEL,
         "messages": messages,
         "temperature": 0.4,
-        "max_tokens": 220
+        "max_tokens": 600,
     }
-    
+    url = f"{AI_BASE_URL}/chat/completions"
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
-    except requests.exceptions.RequestException as e:
-        log.error("AI API error: %s", e)
-        raise RuntimeError(f"AI API error: {e}")
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        log.exception("AI error")
+        return f"(تعذّر توليد الرد: {e})"
 
-def ai_start(chat_id, uid):
-    """بدء جلسة الذكاء الاصطناعي"""
-    if not ai_ready():
-        send(chat_id, "ميزة <b>عربي سايكو</b> غير مفعّلة (أكمل إعدادات AI).", reply_kb())
-        return
-    
-    db = get_db()
-    initial_messages = [{"role":"system","content": SYSTEM_PROMPT}]
-    db.execute(
-        "INSERT OR REPLACE INTO ai_sessions (user_id, messages) VALUES (?, ?)",
-        (uid, json.dumps(initial_messages))
+async def ai_respond(user_text: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    hist: List[Dict[str, str]] = context.user_data.get("ai_hist", [])
+    hist = hist[-20:]
+    convo = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + hist + [{"role": "user", "content": user_text}]
+    reply = await ai_complete(convo)
+    hist += [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
+    context.user_data["ai_hist"] = hist[-20:]
+    return reply
+
+# ---------- Commands ----------
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message(
+        "مرحبًا! أنا **عربي سايكو**. ابدأ جلسة الذكاء الاصطناعي أو استخدم القوائم.",
+        reply_markup=TOP_KB
     )
-    db.commit()
-    
-    send(chat_id,
-         f"بدأنا جلسة <b>عربي سايكو</b> 🤖 بإشراف {SUPERVISOR_NAME} ({SUPERVISOR_TITLE}).\n"
-         "اكتب سؤالك عن النوم/القلق/CBT…\n"
-         "لإنهاء الجلسة: اكتب <code>انهاء</code>.",
-         reply_kb())
+    return MENU
 
-def ai_end(chat_id, uid):
-    """إنهاء جلسة الذكاء الاصطناعي"""
-    db = get_db()
-    db.execute("DELETE FROM ai_sessions WHERE user_id = ?", (uid,))
-    db.commit()
-    send(chat_id, "تم إنهاء جلسة عربي سايكو ✅", reply_kb())
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("اكتب: عربي سايكو 🧠 ثم ابدأ الجلسة. للأكواد: /ai_diag", reply_markup=TOP_KB)
+    return MENU
 
-def ai_handle(chat_id, uid, user_text):
-    """معالجة رسالة المستخدم في جلسة الذكاء الاصطناعي"""
-    if not is_valid_user_input(user_text):
-        send(chat_id, "الرسالة طويلة جدًا أو تحتوي على محتوى غير صالح.", reply_kb())
-        return
-    
-    if crisis_guard(user_text):
-        send(chat_id,
-             "أقدّر شعورك، وسلامتك أهم شيء الآن.\n"
-             "إن وُجدت أفكار لإيذاء النفس فاتصل بالطوارئ فورًا أو توجّه لأقرب طوارئ.",
-             reply_kb())
-        return
-    
-    db = get_db()
-    row = db.execute("SELECT messages FROM ai_sessions WHERE user_id = ?", (uid,)).fetchone()
-    
-    if not row:
-        ai_start(chat_id, uid)
-        return
-    
-    try:
-        msgs = json.loads(row['messages'])
-        msgs = msgs[-16:]  # حفظ الذاكرة
-        msgs.append({"role":"user","content": user_text})
-        
-        reply = ai_call(msgs)
-        msgs.append({"role":"assistant","content": reply})
-        
-        # حفظ الرسائل المحدثة
-        db.execute(
-            "UPDATE ai_sessions SET messages = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
-            (json.dumps(msgs[-18:]), uid)
+async def cmd_ai_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    base_ok = "True" if AI_BASE_URL else "False"
+    key_ok  = "True" if AI_API_KEY else "False"
+    model   = AI_MODEL or "-"
+    await update.message.reply_text(f"AI_BASE_URL set={base_ok} | KEY set={key_ok} | MODEL={model}")
+
+# ---------- Routers ----------
+async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = (update.message.text or "").strip()
+    if t.startswith("عربي سايكو"):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("ابدأ جلسة عربي سايكو 🤖", callback_data="start_ai")],
+        ])
+        await update.message.reply_text(
+            "أنا مساعد نفسي مدعوم بالذكاء الاصطناعي (للتثقيف والدعم السلوكي).",
+            reply_markup=kb
         )
-        db.commit()
-        
-        send(chat_id, reply, reply_kb())
-    except Exception as e:
-        log.error("AI handling error: %s", e)
-        send(chat_id,
-             "حدث خطأ أثناء معالجة طلبك. يرجى المحاولة لاحقًا.",
-             reply_kb())
+        return MENU
+    await update.message.reply_text("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
+    return MENU
 
-# =============== اختبارات نفسية (GAD-7 / PHQ-9) ===============
-ANS = [("أبدًا",0), ("عدة أيام",1), ("أكثر من النصف",2), ("تقريبًا يوميًا",3)]
+async def start_ai_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "start_ai":
+        context.user_data["ai_hist"] = []
+        await q.message.reply_text(
+            "بدأت جلسة **عربي سايكو**. اكتب ما يقلقك الآن.\nلإنهاء الجلسة: «◀️ إنهاء جلسة عربي سايكو».",
+            reply_markup=AI_CHAT_KB
+        )
+        return AI_CHAT
+    return MENU
 
-G7 = [
-    "التوتر/العصبية أو الشعور بالقلق",
-    "عدم القدرة على التوقف عن القلق أو السيطرة عليه",
-    "الانشغال بالهموم بدرجة كبيرة",
-    "صعوبة الاسترخاء",
-    "تململ/صعوبة الجلوس بهدوء",
-    "الانزعاج بسرعة أو العصبية",
-    "الخوف من حدوث شيء سيئ"
-]
+async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if text in ("◀️ إنهاء جلسة عربي سايكو", "/خروج", "خروج"):
+        await update.message.reply_text("انتهت الجلسة. رجوع للقائمة.", reply_markup=TOP_KB)
+        return MENU
 
-PHQ9 = [
-    "قلة الاهتمام أو المتعة بالقيام بالأشياء",
-    "الشعور بالحزن أو الاكتئاب أو اليأس",
-    "مشاكل في النوم أو النوم كثيرًا",
-    "الإرهاق أو قلة الطاقة",
-    "ضعف الشهية أو الإفراط في الأكل",
-    "الشعور بتدنّي تقدير الذات أو الذنب",
-    "صعوبة التركيز",
-    "الحركة/الكلام ببطء شديد أو بعصبية زائدة",
-    "أفكار بأنك ستكون أفضل حالًا لو لم تكن موجودًا"
-]
+    # عرض حالة "يكتب…"
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    except Exception:
+        pass
 
-TESTS = {"g7":{"name":"مقياس القلق GAD-7","q":G7}, "phq":{"name":"مقياس الاكتئاب PHQ-9","q":PHQ9}}
+    reply = await ai_respond(text, context)
+    await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
+    return AI_CHAT
 
-def tests_menu(chat_id):
-    send(chat_id, "اختر اختبارًا:", inline([
-        [{"text":"اختبار القلق (GAD-7)","callback_data":"t:g7"}],
-        [{"text":"اختبار الاكتئاب (PHQ-9)","callback_data":"t:phq"}],
-    ]))
+async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_message("اختر من الأزرار أو اكتب /start.", reply_markup=TOP_KB)
+    return MENU
 
-def test_start(chat_id, uid, key):
-    """بدء اختبار جديد"""
-    if key not in TESTS:
-        send(chat_id, "اختبار غير معروف.", reply_kb())
-        return
-    
-    data = TESTS[key]
-    db = get_db()
-    db.execute(
-        "INSERT OR REPLACE INTO test_sessions (user_id, test_key, current_index, score) VALUES (?, ?, ?, ?)",
-        (uid, key, 0, 0)
-    )
-    db.commit()
-    
-    send(chat_id, f"سنبدأ: <b>{data['name']}</b>\nأجب حسب آخر أسبوعين.", reply_kb())
-    test_ask(chat_id, uid)
-
-def test_ask(chat_id, uid):
-    """عرض سؤال الاختبار الحالي"""
-    db = get_db()
-    row = db.execute(
-        "SELECT test_key, current_index, score FROM test_sessions WHERE user_id = ?",
-        (uid,)
-    ).fetchone()
-    
-    if not row:
-        return
-    
-    key, i, score = row['test_key'], row['current_index'], row['score']
-    qs = TESTS[key]["q"]
-    
-    if i >= len(qs):
-        total = len(qs) * 3
-        send(chat_id, f"النتيجة: <b>{score}</b> من {total}\n{test_interpret(key, score)}", reply_kb())
-        db.execute("DELETE FROM test_sessions WHERE user_id = ?", (uid,))
-        db.commit()
-        return
-    
-    q = qs[i]
-    send(chat_id, f"س{ i+1 }: {q}", inline([
-        [{"text":ANS[0][0],"callback_data":"qa0"}, {"text":ANS[1][0],"callback_data":"qa1"}],
-        [{"text":ANS[2][0],"callback_data":"qa2"}, {"text":ANS[3][0],"callback_data":"qa3"}],
-    ]))
-
-def test_record(chat_id, uid, idx):
-    """تسجيل إجابة الاختبار"""
-    if idx < 0 or idx > 3:
-        send(chat_id, "إجابة غير صالحة.", reply_kb())
-        return
-    
-    db = get_db()
-    row = db.execute(
-        "SELECT test_key, current_index, score FROM test_sessions WHERE user_id = ?",
-        (uid,)
-    ).fetchone()
-    
-    if not row:
-        return
-    
-    key, i, score = row['test_key'], row['current_index'], row['score']
-    new_score = score + ANS[idx][1]
-    new_index = i + 1
-    
-    db.execute(
-        "UPDATE test_sessions SET current_index = ?, score = ? WHERE user_id = ?",
-        (new_index, new_score, uid)
-    )
-    db.commit()
-    
-    test_ask(chat_id, uid)
-
-def test_interpret(key, score):
-    """تفسير نتائج الاختبار"""
-    if key == "g7":
-        if score <= 4: lvl = "ضئيل"
-        elif score <= 9: lvl = "خفيف"
-        elif score <= 14: lvl = "متوسط"
-        else: lvl = "شديد"
-        return f"<b>مؤشرات قلق {lvl}</b> (تعليمي).\nنصيحة: تنفّس ببطء، قلّل الكافيين، وثبّت نومك."
-    
-    if key == "phq":
-        if score <= 4: lvl = "ضئيل"
-        elif score <= 9: lvl = "خفيف"
-        elif score <= 14: lvl = "متوسط"
-        elif score <= 19: lvl = "متوسط إلى شديد"
-        else: lvl = "شديد"
-        return f"<b>مؤشرات اكتئاب {lvl}</b> (تعليمي).\nنصيحة: تنشيط سلوكي + روتين نوم + تواصل اجتماعي."
-    
-    return "تم."
-
-# =============== باقي الكود (CBT، التثقيف، التشخيص التعليمي) ===============
-# [يتبع بنفس نمط التعديلات السابقة مع استخدام قاعدة البيانات]
-
-# =============== صفحات وويبهوك ===============
-@app.before_first_request
-def before_first_request():
-    """تهيئة قاعدة البيانات قبل أول طلب"""
-    init_db()
-
-@app.get("/")
-def home():
-    return jsonify({
-        "app": "Arabi Psycho Telegram Bot",
-        "public_url": RENDER_EXTERNAL_URL,
-        "webhook": f"/webhook/{WEBHOOK_SECRET[:3]}*****",
-        "ai_ready": ai_ready(),
-        "supervisor": {
-            "name": SUPERVISOR_NAME, "title": SUPERVISOR_TITLE,
-            "license": f"{LICENSE_NO} – {LICENSE_ISSUER}"
+def _register_handlers():
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", cmd_start), CommandHandler("help", cmd_help)],
+        states={
+            MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, top_router)],
+            AI_CHAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
         },
-        "database": "SQLite with session persistence"
-    })
+        fallbacks=[MessageHandler(filters.ALL, fallback)],
+        allow_reentry=True,
+    )
+    tg_app.add_handler(conv)
+    tg_app.add_handler(CallbackQueryHandler(start_ai_cb, pattern="^start_ai$"))
+    tg_app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
 
-@app.get("/setwebhook")
-def set_hook():
-    if not RENDER_EXTERNAL_URL:
-        return jsonify({"ok": False, "error": "RENDER_EXTERNAL_URL not set"}), 400
-    
-    url = f"{RENDER_EXTERNAL_URL}/webhook/{WEBHOOK_SECRET}"
-    try:
-        res = requests.post(f"{BOT_API}/setWebhook", json={"url": url}, timeout=15)
-        return res.json(), res.status_code
-    except requests.exceptions.RequestException as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+_register_handlers()
 
-@app.post(f"/webhook/{WEBHOOK_SECRET}")
-def webhook():
-    try:
-        upd = request.get_json(force=True, silent=True) or {}
-        
-        # [معالجة الرسائل والكولباك بنفس المنطق السابق مع استخدام الدوال المحسنة]
-        
-        return "ok", 200
-    except Exception as e:
-        log.error("Webhook error: %s", e)
-        return "error", 500
-
-# =============== تشغيل التطبيق ===============
-if __name__ == "__main__":
-    # تهيئة قاعدة البيانات
-    with app.app_context():
-        init_db()
-    
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+# ---------- PTB error log ----------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.exception("PTB Error", exc_info=context.error)
+tg_app.add_error_handler(on_error)
