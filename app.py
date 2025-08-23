@@ -280,3 +280,12 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
+Replace app.py with Flask+httpx menubot
+
+- إضافة قائمة أزرار رئيسية: العلاج السلوكي المعرفي (CBT)، اختبارات نفسية،
+  اضطرابات الشخصية، عربي سايكو (تشخيص DSM)، والتواصل مع أخصائي/طبيب.
+- تفعيل Webhook على /webhook/secret ومسار فحص جاهزية على / .
+- استخدام httpx غير المتزامن مع مهلة وإعادة محاولات لتحسين الاعتمادية.
+- تسجيل مختصر للواردات بدون تخزين بيانات حساسة.
+- إزالة الاعتماد على features.app.py وتبسيط التسجيل والـ handlers.
+- الإبقاء على المتطلبات: python-telegram-bot==21.4 و httpx==0.27 و Flask==3.0.3 و gunicorn==21.2.0.
