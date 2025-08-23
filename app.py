@@ -1,469 +1,431 @@
 # -*- coding: utf-8 -*-
-import os, json, asyncio, logging
-from typing import Optional, Dict, Any, List, Tuple
+import os
+import json
+import logging
+from typing import Dict, Any, Optional
 
-import httpx
 from flask import Flask, request, abort
+import httpx
 
-from telegram import (
-    Update, InlineKeyboardMarkup, InlineKeyboardButton
-)
-from telegram.constants import ChatAction, ParseMode
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
-)
-
-# ===== الإعدادات العامة =====
+# ================== إعدادات عامة ==================
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger("app")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("متغير البيئة TELEGRAM_BOT_TOKEN غير موجود.")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN مفقود من البيئة")
 
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+API = f"https://api.telegram.org/bot{TOKEN}"
 
-# إعدادات الذكاء الاصطناعي (اختياري)
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-AI_API_KEY = os.getenv("AI_API_KEY", "")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+WEBHOOK_SECRET_PATH = "/webhook/secret"
+
+# الذكاء الاصطناعي (اختياري)
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1")
+AI_API_KEY = os.getenv("AI_API_KEY")  # ضع مفتاح OpenRouter هنا
 AI_MODEL = os.getenv("AI_MODEL", "openrouter/auto")
 
+# قنوات تواصل (اختياري)
 CONTACT_THERAPIST_URL = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/your_therapist")
 CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "https://t.me/your_psychiatrist")
 
-# لحفظ وضع المحادثة لكل مستخدم (وضع AI DSM مثلاً)
-CHAT_MODE: Dict[int, str] = {}
+# ذاكرة حالات بسيطة (بالرام)
+STATE: Dict[int, Dict[str, Any]] = {}   # لكل chat_id نخزّن حالة الجلسة
+TEST_STATE: Dict[int, Dict[str, Any]] = {}  # حالة الاختبارات السريعة
 
-# ===== Flask + PTB =====
-flask_app = Flask(__name__)
-tg_app: Application = Application.builder().token(TELEGRAM_TOKEN).build()
+# ================== أدوات Telegram ==================
+def tg_send(method: str, payload: Dict[str, Any]) -> Optional[dict]:
+    try:
+        with httpx.Client(timeout=20) as cli:
+            r = cli.post(f"{API}/{method}", json=payload)
+        if r.status_code == 200:
+            data = r.json()
+            if not data.get("ok"):
+                LOG.error("Telegram error: %s", data)
+            return data
+        LOG.error("HTTP error to Telegram %s: %s", method, r.text)
+    except Exception as e:
+        LOG.exception("tg_send error: %s", e)
+    return None
 
-# ===== أدوات مساعدة =====
-def main_menu_kb() -> InlineKeyboardMarkup:
-    rows = [
+def send_action(chat_id: int, action: str = "typing") -> None:
+    tg_send("sendChatAction", {"chat_id": chat_id, "action": action})
+
+def send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None,
+                 parse_mode: Optional[str] = "HTML") -> None:
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    tg_send("sendMessage", payload)
+
+def edit_message(chat_id: int, message_id: int, text: str,
+                 reply_markup: Optional[dict] = None,
+                 parse_mode: Optional[str] = "HTML") -> None:
+    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    tg_send("editMessageText", payload)
+
+def answer_callback(callback_id: str, text: Optional[str] = None, alert: bool = False) -> None:
+    payload = {"callback_query_id": callback_id}
+    if text:
+        payload["text"] = text
+        payload["show_alert"] = alert
+    tg_send("answerCallbackQuery", payload)
+
+# ================== لوحات الأزرار ==================
+def kb_inline(rows: list[list[dict]]) -> dict:
+    """توليد InlineKeyboardMarkup"""
+    return {"inline_keyboard": rows}
+
+def kb_main_menu() -> dict:
+    return kb_inline([
         [
-            InlineKeyboardButton("🧠 العلاج السلوكي المعرفي (CBT)", callback_data="cbt"),
+            {"text": "🧠 العلاج السلوكي (CBT)", "callback_data": "menu:cbt"},
+            {"text": "🧪 اختبارات نفسية", "callback_data": "menu:tests"},
         ],
         [
-            InlineKeyboardButton("📝 اختبارات نفسية", callback_data="tests"),
-            InlineKeyboardButton("🧩 اضطرابات الشخصية", callback_data="pd_info"),
+            {"text": "📚 اضطرابات الشخصية (DSM-5)", "callback_data": "menu:dsm"},
         ],
         [
-            InlineKeyboardButton("🤖 تشخيص مبدئي بالذكاء الاصطناعي (DSM-5-TR)", callback_data="ai_dsm"),
+            {"text": "🤖 تشخيص بالذكاء الاصطناعي", "callback_data": "ai:start"},
         ],
         [
-            InlineKeyboardButton("👩‍⚕️ أخصائي نفسي", url=CONTACT_THERAPIST_URL),
-            InlineKeyboardButton("🧑‍⚕️ طبيب نفسي", url=CONTACT_PSYCHIATRIST_URL),
+            {"text": "👤 أخصائي نفسي", "callback_data": "menu:contact_therapist"},
+            {"text": "🩺 طبيب نفسي", "callback_data": "menu:contact_psy"},
         ],
         [
-            InlineKeyboardButton("📚 ملاحظة حول DSM-5-TR", callback_data="dsm_note"),
+            {"text": "🔄 رجوع للقائمة", "callback_data": "menu:home"},
         ],
-    ]
-    return InlineKeyboardMarkup(rows)
+    ])
 
-async def send_typing(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
-    await ctx.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+def kb_cbt_menu() -> dict:
+    return kb_inline([
+        [{"text": "📝 جدول ABC", "callback_data": "cbt:abc"}],
+        [{"text": "💭 أفكار تلقائية + تحدّي", "callback_data": "cbt:automatic"}],
+        [{"text": "📈 تفعيل سلوكي (نشاطات)", "callback_data": "cbt:ba"}],
+        [{"text": "⬅️ رجوع", "callback_data": "menu:home"}],
+    ])
 
-def ensure_markdown(text: str) -> str:
-    return text.replace("_", "\\_").replace("*", "\\*")
+def kb_tests_menu() -> dict:
+    return kb_inline([
+        [
+            {"text": "PHQ-2 (اكتئاب سريع)", "callback_data": "test:phq2"},
+            {"text": "GAD-2 (قلق سريع)", "callback_data": "test:gad2"},
+        ],
+        [
+            {"text": "سمات شخصية (مختصر)", "callback_data": "test:traits"},
+            {"text": "فحص اضطرابات شخصية (مؤشر)", "callback_data": "test:pd_screen"},
+        ],
+        [{"text": "⬅️ رجوع", "callback_data": "menu:home"}],
+    ])
 
-# ===== أوامر أساسية =====
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    CHAT_MODE.pop(update.effective_chat.id, None)
-    welcome = (
-        "مرحبًا بك في **Arabi Psycho** 👋\n"
-        "أنا مساعد نفسي توعوي — أقدم تمارين CBT واختبارات قصيرة ومعلومات عن اضطرابات الشخصية، "
-        "وأيضًا *تشخيصًا مبدئيًا* مدعومًا بالذكاء الاصطناعي وفق إرشادات DSM-5-TR (ليس بديلاً عن زيارة مختص).\n\n"
-        "اختر من القائمة:"
-    )
-    await update.effective_message.reply_text(
-        welcome, reply_markup=main_menu_kb(), parse_mode=ParseMode.MARKDOWN
-    )
+def kb_dsm_menu() -> dict:
+    return kb_inline([
+        [{"text": "Cluster A (غريب/شاذ)", "callback_data": "dsm:clusterA"}],
+        [{"text": "Cluster B (درامي/اندفاعي)", "callback_data": "dsm:clusterB"}],
+        [{"text": "Cluster C (قلِق/متجنب)", "callback_data": "dsm:clusterC"}],
+        [{"text": "⬅️ رجوع", "callback_data": "menu:home"}],
+    ])
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = (
-        "الأوامر المتاحة:\n"
-        "/start — عرض القائمة الرئيسية\n"
-        "/help — مساعدة\n"
-        "/menu — فتح القائمة\n\n"
-        "يمكنك كذلك كتابة أعراضك مباشرة وسأحاول مساعدتك."
-    )
-    await update.effective_message.reply_text(msg)
+def kb_contacts() -> dict:
+    return kb_inline([
+        [{"text": "👤 تواصل مع أخصائي نفسي", "url": CONTACT_THERAPIST_URL}],
+        [{"text": "🩺 تواصل مع طبيب نفسي", "url": CONTACT_PSYCHIATRIST_URL}],
+        [{"text": "⬅️ رجوع", "callback_data": "menu:home"}],
+    ])
 
-async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(
-        "القائمة الرئيسية:", reply_markup=main_menu_kb()
-    )
-
-# ======= الذكاء الاصطناعي (DSM) =======
-AI_SYS_PROMPT = (
-    "أنت مساعد صحة نفسية باللغة العربية. قدّم تحليلًا مبدئيًا فقط (ليس تشخيصًا نهائيًا) "
-    "بناءً على DSM-5-TR: اذكر الاحتمالات الأكثر منطقية، والمعايير التي تنطبق أو لا تنطبق بإيجاز، "
-    "والتفريقات التشخيصية المحتملة، وخطة أولية (تعليمية/سلوكية، ومتى يجب طلب مساعدة فورية). "
-    "استخدم لغة واضحة وحنونة، ولا تُصدر أحكامًا. حد أقصى 1800 حرف."
+# ================== رسائل جاهزة ==================
+WELCOME = (
+    "<b>مرحبًا بك في عربي سايكو 🤝</b>\n"
+    "أنا مساعد نفسي تعليمي. لست بديلاً عن التشخيص الطبي.\n\n"
+    "اختر من القائمة:"
 )
 
-async def ai_complete(user_text: str) -> str:
-    """
-    يستدعي واجهة الذكاء الاصطناعي إن توفرت مفاتيحها، وإلا يرجع ردًا ثابتًا.
-    """
-    if not AI_API_KEY:
-        # وضع بديل بدون API
-        return (
-            "هذا تحليل مبدئي (تجريبي) بناءً على وصفك. للحصول على تحليل أذكى، "
-            "أضف مفتاح AI_API_KEY و AI_MODEL في متغيرات البيئة.\n\n"
-            f"وصفك: {user_text[:400]}..."
-        )
+CBT_ABC = (
+    "<b>جدول ABC</b>\n"
+    "A = الحدث المُفعِّل\nB = الفكرة/التفسير\nC = الشعور/السلوك\n\n"
+    "مثال:\nA: تأخرت عن العمل\nB: \"أنا فاشل\"\nC: حزن وانسحاب\n\n"
+    "جرّب كتابة (A, B, C) لحدث مرّ بك اليوم."
+)
 
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": AI_MODEL,
-        "messages": [
-            {"role": "system", "content": AI_SYS_PROMPT},
-            {"role": "user", "content": user_text},
-        ],
-    }
+CBT_AUTO = (
+    "<b>الأفكار التلقائية وتحدّيها</b>\n"
+    "1) لاحِظ الفكرة السريعة (مثال: \"لن أنجح\").\n"
+    "2) الأدلة مع/ضد.\n"
+    "3) فكرة متوازنة بديلة.\n\n"
+    "اكتب فكرتك الآن وسأساعدك بإطار تحدّي مختصر."
+)
+
+CBT_BA = (
+    "<b>التفعيل السلوكي</b>\n"
+    "اختر نشاطًا بسيطًا ممتعًا/ذي معنى اليوم (10–20 دقيقة):\n"
+    "المشي – اتصال بصديق – ترتيب ركن صغير – هواية قصيرة.\n"
+    "حدّد الوقت ونفّذ، ثم قيّم مزاجك قبل/بعد (0–10)."
+)
+
+DSM_A = (
+    "<b>Cluster A</b>\n"
+    "البارانويدي، الفُصامي، الفُصامِيّ الوجداني.\n"
+    "سمات: غُرابة/انسحاب/أفكار مرجعية.\n"
+    "إن كانت السمات مؤثرة بشدة على الوظيفة، راجع أخصائي."
+)
+DSM_B = (
+    "<b>Cluster B</b>\n"
+    "الهستيري، الحدّي، النرجسي، المعادي للمجتمع.\n"
+    "سمات: اندفاع، تقلب، بحث عن الانتباه، حدود ضعيفة.\n"
+    "التشخيص دقيق ويحتاج تقييم سريري."
+)
+DSM_C = (
+    "<b>Cluster C</b>\n"
+    "التجنُّبي، الاعتمادي، القهري.\n"
+    "سمات: قلق، تجنّب، كمالية/صرامة.\n"
+    "العلاج النفسي مفيد جدًا مع CBT والمهارات."
+)
+
+# ================== ذكاء اصطناعي ==================
+def ai_diagnose(prompt: str) -> str:
+    """يرسل وصف الحالة للنموذج ويرجع ملخصًا منظّمًا. إن لم يوجد مفتاح، يرجع ردًا افتراضيًا."""
+    if not AI_API_KEY:
+        return (
+            "<b>تشخيص آلي (تجريبي)</b>\n"
+            "لست مفعلًا بمفتاح API الآن، لذا هذا رد توعوي عام:\n"
+            "- لاحظ الأعراض (المدة/الشدة/الأثر).\n"
+            "- راقب النوم والشهية والطاقة.\n"
+            "- لو وُجدت أفكار إيذاء: تواصل فورًا مع الطوارئ.\n"
+            "لنتيجة أكثر دقة، وفّر <code>AI_API_KEY</code> في الإعدادات."
+        )
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(f"{AI_BASE_URL}/chat/completions", headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            # OpenRouter/OpenAI-like
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            return content or "لم أتمكن من توليد رد الآن."
+        headers = {
+            "Authorization": f"Bearer {AI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": AI_MODEL,
+            "messages": [
+                {"role": "system",
+                 "content": (
+                     "You are an Arabic mental health assistant. "
+                     "Use DSM-5 terminology cautiously and include a disclaimer. "
+                     "Structure the reply with headings and bullet points, respond in Arabic."
+                 )},
+                {"role": "user",
+                 "content": f"أعراضي ووصف حالتي: {prompt}\nحلّل بشكل تعليمي، ثم اقترح خطة ذاتية قصيرة (CBT) ومتى أحتاج مختص."},
+            ],
+            "temperature": 0.4,
+        }
+        with httpx.Client(timeout=40) as cli:
+            r = cli.post(f"{AI_BASE_URL}/chat/completions", headers=headers, json=body)
+        r.raise_for_status()
+        data = r.json()
+        content = data["choices"][0]["message"]["content"].strip()
+        # إضافة تنبيه
+        content += "\n\n<i>ملاحظة: هذا ليس تشخيصًا طبيًا نهائيًا.</i>"
+        return content
     except Exception as e:
         LOG.exception("AI error: %s", e)
-        return "تعذر الاتصال بخدمة الذكاء الاصطناعي حاليًا."
+        return "تعذر استخدام نموذج الذكاء الاصطناعي حاليًا. جرّب لاحقًا."
 
-# ======= أزرار القائمة =======
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    await q.answer()
-    chat_id = q.message.chat_id
+# ================== اختبارات سريعة ==================
+PHQ2_QS = [
+    "خلال آخر أسبوعين: هل شعرت بقلة الاهتمام أو المتعة بالأشياء؟",
+    "خلال آخر أسبوعين: هل شعرت بالإحباط أو الاكتئاب أو اليأس؟",
+]
+GAD2_QS = [
+    "خلال آخر أسبوعين: هل شعرت بالتوتر/العصبية/القلق؟",
+    "خلال آخر أسبوعين: هل لم تستطع التوقف عن القلق أو التحكم به؟",
+]
+TRAITS_QS = [
+    "أفضل الأنشطة الاجتماعية على العزلة؟",
+    "أعتبر نفسي منظمًا ودقيقًا؟",
+    "أتضايق بسرعة عند الضغط؟",
+]
+PD_SCREEN_QS = [
+    "هل تكرّر عليك نمط علاقات متوتر/متقلب طويلًا؟",
+    "هل لديك اندفاعية أو سلوكيات مخاطرة تسبب مشكلات؟",
+    "هل سمعت من مقرّبين أنك \"صارم/متحكم\" أو \"لا مبالي\" بشكل مزمن؟",
+]
 
-    if q.data == "cbt":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🧾 سجل الأفكار (Thought Record)", callback_data="cbt_tr")],
-            [InlineKeyboardButton("🫁 تمرين تنفس 4-7-8", callback_data="cbt_breath")],
-            [InlineKeyboardButton("📅 جدولة أنشطة مُسعدِة", callback_data="cbt_pa")],
-            [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
-        ])
-        await q.edit_message_text("اختر أداة CBT:", reply_markup=kb)
+def start_test(chat_id: int, test_key: str, qs: list[str]) -> None:
+    TEST_STATE[chat_id] = {"key": test_key, "qs": qs, "i": 0, "score": 0}
+    q = qs[0]
+    rows = [[{"text": "نعم", "callback_data": f"t:{test_key}:y"},
+             {"text": "لا", "callback_data": f"t:{test_key}:n"}],
+            [{"text": "إنهاء", "callback_data": "t:end"}]]
+    send_message(chat_id, f"<b>اختبار {test_key.upper()}</b>\n{q}", kb_inline(rows))
 
-    elif q.data == "tests":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("PHQ-2 (مؤشرات مزاج)", callback_data="test_phq2")],
-            [InlineKeyboardButton("GAD-2 (مؤشرات قلق)", callback_data="test_gad2")],
-            [InlineKeyboardButton("BPD-5 (مؤشرات أولية)", callback_data="test_bpd5")],
-            [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
-        ])
-        await q.edit_message_text("اختر اختبارًا قصيرًا:", reply_markup=kb)
+def handle_test_step(chat_id: int, ans: Optional[str]) -> None:
+    st = TEST_STATE.get(chat_id)
+    if not st:
+        return
+    if ans == "y":
+        st["score"] += 1
+    st["i"] += 1
+    if st["i"] >= len(st["qs"]):
+        # النتيجة
+        score = st["score"]
+        key = st["key"]
+        del TEST_STATE[chat_id]
+        interpret = ""
+        if key in ("phq2", "gad2"):
+            interpret = "قد يشير لوجود أعراض ملحوظة، يُستحسن المتابعة." if score >= 3 else "أعراض خفيفة/محدودة على الأرجح."
+        elif key == "traits":
+            interpret = "هذه مؤشرات عامة لسمات (انبساط/ضمير/عصابية...). ليست تشخيصًا."
+        elif key == "pd_screen":
+            interpret = "إن كانت الإجابات بنعم متكررة ومع أثر وظيفي مزمن، فكر باستشارة مختص."
+        send_message(chat_id, f"<b>النتيجة: {score}/{len(st['qs'])}</b>\n{interpret}", kb_tests_menu())
+        return
+    # سؤال لاحق
+    q = st["qs"][st["i"]]
+    rows = [[{"text": "نعم", "callback_data": f"t:{st['key']}:y"},
+             {"text": "لا", "callback_data": f"t:{st['key']}:n"}],
+            [{"text": "إنهاء", "callback_data": "t:end"}]]
+    send_message(chat_id, q, kb_inline(rows))
 
-    elif q.data == "pd_info":
-        text = (
-            "🧩 **اضطرابات الشخصية** (تصنيف تقريبي):\n"
-            "- المجموعة A (غريبة/غريبة الأطوار): بارانوية، انفصام شخصية فصامي، فصامية.\n"
-            "- المجموعة B (درامية/اندفاعية): حدية، نرجسية، هستيرية، معادية للمجتمع.\n"
-            "- المجموعة C (قلِقة/خجولة): تجنُّبية، اعتمادية، قسرية وسواسية.\n\n"
-            "هذه معلومات تثقيفية وليست تشخيصًا. اطلب تقييمًا مهنيًا عند المعاناة."
-        )
-        await q.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")]]
-        ))
+# ================== Handlers منطقية ==================
+def handle_start(chat_id: int) -> None:
+    send_message(chat_id, WELCOME, kb_main_menu())
 
-    elif q.data == "ai_dsm":
-        CHAT_MODE[chat_id] = "dsm"
-        await q.edit_message_text(
-            "🔎 **تشخيص مبدئي بالذكاء الاصطناعي**\n"
-            "اكتب أعراضك (المدة، الشدة، مواقف مثيرة، تأثيرها على الدراسة/العمل/النوم...)\n"
-            "سأحلّلها مبدئيًا وفق DSM-5-TR. (ليس بديلاً عن زيارة مختص).",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")]])
-        )
+def handle_ai_prompt(chat_id: int) -> None:
+    STATE[chat_id] = {"mode": "await_ai"}
+    send_message(chat_id, "🚀 اكتب وصف حالتك/أعراضك بتفصيل (المدة، الشدة، المواقف).")
 
-    elif q.data == "dsm_note":
-        await q.edit_message_text(
-            "📚 **ملاحظة حول DSM-5-TR**\n"
-            "النسخة الكاملة مرخّصة ومدفوعة ولا أستطيع مشاركتها. "
-            "بدلًا من ذلك أوفّر تحليلًا مبدئيًا مستندًا إلى معاييره لأغراض التثقيف فقط.",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")]]
-            )
-        )
+def maybe_handle_text_state(chat_id: int, text: str) -> bool:
+    st = STATE.get(chat_id)
+    if not st:
+        return False
+    if st.get("mode") == "await_ai":
+        send_action(chat_id, "typing")
+        reply = ai_diagnose(text)
+        send_message(chat_id, reply, kb_main_menu())
+        del STATE[chat_id]
+        return True
+    return False
 
-    elif q.data == "back_home":
-        CHAT_MODE.pop(chat_id, None)
-        await q.edit_message_text("القائمة الرئيسية:", reply_markup=main_menu_kb())
-
-    # محاثات CBT السريعة
-    elif q.data == "cbt_breath":
-        msg = (
-            "🫁 **تنفس 4-7-8**\n"
-            "1) شهيق عبر الأنف 4 ثوانٍ\n"
-            "2) احتفاظ بالنفَس 7 ثوانٍ\n"
-            "3) زفير بطيء عبر الفم 8 ثوانٍ\n"
-            "كرّر 4 مرات. يساعد على تهدئة الجهاز العصبي."
-        )
-        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
-                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="cbt")]]))
-
-    elif q.data == "cbt_pa":
-        msg = (
-            "📅 **جدولة نشاط مُسعد**\n"
-            "اختر نشاطًا بسيطًا يُشعرك بالقيمة أو المتعة (مثل المشي 10 دقائق، اتصال بصديق، ترتيب مساحة صغيرة).\n"
-            "ضعه في وقت محدد اليوم ونفّذه. راقب مزاجك قبل وبعد."
-        )
-        await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
-                                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="cbt")]]))
-
-    elif q.data == "cbt_tr":
-        await start_cbt_tr(update, context)
-
-    # اختبارات
-    elif q.data in {"test_phq2", "test_gad2", "test_bpd5"}:
-        await start_test(update, context, q.data)
-
-# ======= CBT Thought Record (محادثة) =======
-CBT_EVENT, CBT_THOUGHT, CBT_EMOTION, CBT_ALT = range(4)
-
-async def start_cbt_tr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.edit_message_text("🧾 **سجل الأفكار** — ما الحدث/الموقف الذي حدث؟",
-                                  parse_mode=ParseMode.MARKDOWN)
-    # تهيئة البيانات
-    context.user_data["cbt_tr"] = {}
-    # تحويل التفاعل إلى الرسائل (ConversationHandler يتتبع الحالة)
-    await tg_app.bot.send_message(chat_id=update.effective_chat.id,
-                                  text="اكتب وصف الحدث هنا…")
-    # نغيّر الحالة يدويًا بإرسال أمر داخلي
-    context.user_data["cbt_state"] = CBT_EVENT
-
-async def cbt_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    state = context.user_data.get("cbt_state")
-    data = context.user_data.get("cbt_tr", {})
-    text = update.message.text.strip()
-
-    if state == CBT_EVENT:
-        data["event"] = text
-        context.user_data["cbt_state"] = CBT_THOUGHT
-        await update.message.reply_text("ما **الفكرة التلقائية** التي خطرت لك؟")
-    elif state == CBT_THOUGHT:
-        data["thought"] = text
-        context.user_data["cbt_state"] = CBT_EMOTION
-        await update.message.reply_text("ما **المشاعر** (واحدة أو أكثر) ودرجتها من 0 إلى 100؟")
-    elif state == CBT_EMOTION:
-        data["emotion"] = text
-        context.user_data["cbt_state"] = CBT_ALT
-        await update.message.reply_text("ما **الفكرة البديلة المتوازنة** التي يمكن تجربتها؟")
-    elif state == CBT_ALT:
-        data["alt"] = text
-        context.user_data["cbt_state"] = None
-        context.user_data["cbt_tr"] = data
-
-        summary = (
-            "تمرين **سجل الأفكار**\n\n"
-            f"- الحدث: {ensure_markdown(data.get('event',''))}\n"
-            f"- الفكرة التلقائية: {ensure_markdown(data.get('thought',''))}\n"
-            f"- المشاعر/الدرجة: {ensure_markdown(data.get('emotion',''))}\n"
-            f"- الفكرة البديلة: {ensure_markdown(data.get('alt',''))}\n\n"
-            "جرّب الفكرة البديلة في موقف مشابه وقيّم الفرق."
-        )
-        await update.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN,
-                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="cbt")]]))
-
-# ======= اختبارات قصيرة =======
-TEST_ACTIVE = "test_active"
-TEST_IDX = "test_idx"
-TEST_SCORE = "test_score"
-TEST_PAYLOAD = "test_payload"
-
-# تعريفات أسئلة (0..3 نقاط)
-PHQ2 = {
-    "title": "PHQ-2 (مؤشرات مزاج)",
-    "desc": "خلال آخر أسبوعين، كم مرة حدث التالي؟",
-    "answers": ["أبدًا (0)", "عدة أيام (1)", "أكثر من النصف (2)", "تقريبًا كل يوم (3)"],
-    "qs": [
-        "قلة الاهتمام أو المتعة في عمل الأشياء.",
-        "الشعور بالاكتئاب أو اليأس.",
-    ],
-    "cutoff": 3,
-}
-GAD2 = {
-    "title": "GAD-2 (مؤشرات قلق)",
-    "desc": "خلال آخر أسبوعين، كم مرة حدث التالي؟",
-    "answers": ["أبدًا (0)", "عدة أيام (1)", "أكثر من النصف (2)", "تقريبًا كل يوم (3)"],
-    "qs": [
-        "التوتر أو القلق أو العصبية.",
-        "عدم القدرة على التوقف عن القلق أو التحكم فيه.",
-    ],
-    "cutoff": 3,
-}
-BPD5 = {
-    "title": "BPD-5 (مؤشرات أولية لاضطراب الشخصية الحدية)",
-    "desc": "اختر مدى انطباق كل عبارة (0 لا تنطبق .. 3 جدًا).",
-    "answers": ["0", "1", "2", "3"],
-    "qs": [
-        "مشاعر قوية ومتقلبة تتبدل بسرعة.",
-        "سلوكيات اندفاعية قد تضرّ (صرف، طعام، قيادة...).",
-        "حساسية شديدة للهجر أو الرفض.",
-        "صورة ذاتية غير مستقرة (من أنا؟).",
-        "تذبذب شديد بالعلاقات (مثالية ثم خيبة).",
-    ],
-    "cutoff": 8,  # مؤشر فقط
-}
-
-TESTS = {
-    "test_phq2": PHQ2,
-    "test_gad2": GAD2,
-    "test_bpd5": BPD5,
-}
-
-async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str) -> None:
-    spec = TESTS[key]
-    context.user_data[TEST_ACTIVE] = key
-    context.user_data[TEST_IDX] = 0
-    context.user_data[TEST_SCORE] = 0
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ابدأ", callback_data="test_next")],
-        [InlineKeyboardButton("⬅️ رجوع", callback_data="tests")],
-    ])
-    await update.callback_query.edit_message_text(
-        f"**{spec['title']}**\n{spec['desc']}", parse_mode=ParseMode.MARKDOWN, reply_markup=kb
-    )
-
-async def test_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    await q.answer()
-
-    active = context.user_data.get(TEST_ACTIVE)
-    if not active:
-        await q.edit_message_text("لا يوجد اختبار نشِط.", reply_markup=main_menu_kb())
+def handle_callback(chat_id: int, message_id: int, data: str) -> None:
+    if data == "menu:home":
+        edit_message(chat_id, message_id, WELCOME, kb_main_menu())
         return
 
-    spec = TESTS[active]
-    idx = context.user_data.get(TEST_IDX, 0)
-
-    if q.data == "test_next":
-        # عرض السؤال idx
-        if idx >= len(spec["qs"]):
-            await conclude_test(q, context, spec)
-            return
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(spec["answers"][0], callback_data="ans_0"),
-            InlineKeyboardButton(spec["answers"][1], callback_data="ans_1"),
-            InlineKeyboardButton(spec["answers"][2], callback_data="ans_2"),
-            InlineKeyboardButton(spec["answers"][3], callback_data="ans_3"),
-        ]])
-        await q.edit_message_text(
-            f"سؤال {idx+1}/{len(spec['qs'])}\n{spec['qs'][idx]}",
-            reply_markup=kb
-        )
-    elif q.data.startswith("ans_"):
-        val = int(q.data.split("_")[1])
-        context.user_data[TEST_SCORE] = context.user_data.get(TEST_SCORE, 0) + val
-        context.user_data[TEST_IDX] = idx + 1
-        # السؤال التالي
-        if context.user_data[TEST_IDX] >= len(spec["qs"]):
-            await conclude_test(q, context, spec)
-        else:
-            await test_button(Update.de_json(q.to_dict(), tg_app.bot), context)
-            # hack لاستدعاء التالي:
-            await q.edit_message_text(
-                f"سؤال {context.user_data[TEST_IDX]+0}/{len(spec['qs'])}\n{spec['qs'][context.user_data[TEST_IDX]]}",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(spec["answers"][0], callback_data="ans_0"),
-                    InlineKeyboardButton(spec["answers"][1], callback_data="ans_1"),
-                    InlineKeyboardButton(spec["answers"][2], callback_data="ans_2"),
-                    InlineKeyboardButton(spec["answers"][3], callback_data="ans_3"),
-                ]])
-            )
-
-async def conclude_test(q, context, spec) -> None:
-    score = context.user_data.get(TEST_SCORE, 0)
-    cutoff = spec["cutoff"]
-    note = "النتيجة **ضمن النطاق المنخفض** — مؤشّر ضعيف." if score < cutoff else \
-           "النتيجة **مرتفعة نسبيًا** — مؤشّر يستحق المتابعة مع مختص."
-    msg = (
-        f"**{spec['title']}**\n"
-        f"مجموع النقاط: {score}\n\n"
-        f"{note}\n\n"
-        "⚠️ هذه أدوات تحرّي سريعة وليست تشخيصًا نهائيًا."
-    )
-    await q.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN,
-                              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="tests")]]))
-    # تنظيف
-    for k in (TEST_ACTIVE, TEST_IDX, TEST_SCORE):
-        context.user_data.pop(k, None)
-
-# ===== استقبال رسائل المستخدم =====
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    text = update.effective_message.text or ""
-
-    # لو المستخدم داخل وضع DSM AI
-    if CHAT_MODE.get(chat_id) == "dsm":
-        await send_typing(context, chat_id)
-        reply = await ai_complete(text)
-        await update.effective_message.reply_text(reply)
+    if data == "menu:cbt":
+        edit_message(chat_id, message_id, "اختر أداة من CBT:", kb_cbt_menu())
+        return
+    if data == "cbt:abc":
+        send_message(chat_id, CBT_ABC, kb_cbt_menu())
+        return
+    if data == "cbt:automatic":
+        send_message(chat_id, CBT_AUTO, kb_cbt_menu())
+        return
+    if data == "cbt:ba":
+        send_message(chat_id, CBT_BA, kb_cbt_menu())
         return
 
-    # لو داخل محادثة CBT
-    if context.user_data.get("cbt_state") is not None:
-        await cbt_conversation(update, context)
+    if data == "menu:tests":
+        edit_message(chat_id, message_id, "🧪 اختبر نفسك (مؤشرات سريعة):", kb_tests_menu())
+        return
+    if data == "test:phq2":
+        start_test(chat_id, "phq2", PHQ2_QS); return
+    if data == "test:gad2":
+        start_test(chat_id, "gad2", GAD2_QS); return
+    if data == "test:traits":
+        start_test(chat_id, "traits", TRAITS_QS); return
+    if data == "test:pd_screen":
+        start_test(chat_id, "pd_screen", PD_SCREEN_QS); return
+    if data.startswith("t:"):
+        parts = data.split(":")
+        if len(parts) == 3:
+            _, key, ans = parts
+            handle_test_step(chat_id, ans)
+        elif data == "t:end":
+            TEST_STATE.pop(chat_id, None)
+            send_message(chat_id, "تم إنهاء الاختبار.", kb_tests_menu())
         return
 
-    # افتراضي: إظهار القائمة إذا كتب أي شيء
-    await update.effective_message.reply_text(
-        "تم الاستلام ✔️\nاختر من القائمة:", reply_markup=main_menu_kb()
-    )
+    if data == "menu:dsm":
+        edit_message(chat_id, message_id, "📚 اختر مجموعة اضطرابات الشخصية:", kb_dsm_menu()); return
+    if data == "dsm:clusterA":
+        send_message(chat_id, DSM_A, kb_dsm_menu()); return
+    if data == "dsm:clusterB":
+        send_message(chat_id, DSM_B, kb_dsm_menu()); return
+    if data == "dsm:clusterC":
+        send_message(chat_id, DSM_C, kb_dsm_menu()); return
 
-# ===== تسجيل الهاندلرز =====
-def register_handlers(application: Application) -> None:
-    application.add_handler(CommandHandler("start", cmd_start))
-    application.add_handler(CommandHandler("help", cmd_help))
-    application.add_handler(CommandHandler("menu", cmd_menu))
+    if data == "ai:start":
+        handle_ai_prompt(chat_id); return
 
-    # الأزرار العامة + اختبارات
-    application.add_handler(CallbackQueryHandler(on_button, pattern="^(cbt|tests|pd_info|ai_dsm|dsm_note|back_home|cbt_breath|cbt_pa|cbt_tr|test_phq2|test_gad2|test_bpd5)$"))
-    application.add_handler(CallbackQueryHandler(test_button, pattern="^(test_next|ans_0|ans_1|ans_2|ans_3)$"))
+    if data == "menu:contact_therapist":
+        send_message(chat_id, "اختر وسيلة تواصل:", kb_contacts()); return
+    if data == "menu:contact_psy":
+        send_message(chat_id, "اختر وسيلة تواصل:", kb_contacts()); return
 
-    # كل النصوص الأخرى
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    # أي شيء آخر يرجّع للقائمة
+    send_message(chat_id, "⬅️ رجعناك للقائمة.", kb_main_menu())
 
-register_handlers(tg_app)
+# ================== Flask ==================
+flask_app = Flask(__name__)
 
-# ===== مسار الويبهوك =====
-@flask_app.post("/webhook/secret")
-def webhook() -> ("str", int):
-    if request.headers.get("content-type") != "application/json":
-        abort(403)
+@flask_app.get("/health")
+def health():
+    return "OK"
+
+@flask_app.post(WEBHOOK_SECRET_PATH)
+def webhook():
+    if request.method != "POST":
+        return abort(405)
     try:
-        update = Update.de_json(request.get_json(force=True), tg_app.bot)
-        # معالجة غير متزامنة
-        asyncio.get_event_loop().create_task(tg_app.process_update(update))
-    except Exception as e:
-        LOG.exception("webhook error: %s", e)
-    return "OK", 200
+        update = request.get_json(force=True, silent=False)
+    except Exception:
+        return abort(400)
 
-@flask_app.get("/")
-def root_index():
-    return "Arabi Psycho OK"
+    LOG.info(">> incoming update: %s", json.dumps({
+        "update_id": update.get("update_id"),
+        "type": "callback" if "callback_query" in update else "message",
+    }, ensure_ascii=False))
 
-# ===== تشغيل محليًا (اختياري) =====
+    # CallbackQuery (ضغطة زر)
+    if "callback_query" in update:
+        cq = update["callback_query"]
+        chat_id = cq["message"]["chat"]["id"]
+        msg_id = cq["message"]["message_id"]
+        data = cq.get("data", "")
+        answer_callback(cq["id"])
+        handle_callback(chat_id, msg_id, data)
+        return "OK"
+
+    # Message عادي
+    if "message" in update:
+        msg = update["message"]
+        chat = msg.get("chat", {})
+        chat_id = chat.get("id")
+        text = msg.get("text", "") or ""
+
+        # أولوية حالات الذكاء الاصطناعي/الاختبارات
+        if maybe_handle_text_state(chat_id, text):
+            return "OK"
+
+        # أوامر
+        if text.startswith("/start"):
+            handle_start(chat_id)
+        elif text.lower() == "ping" or text == "بنق":
+            send_message(chat_id, "pong ✅", kb_main_menu())
+        else:
+            # رد افتراضي + تلميح
+            send_message(
+                chat_id,
+                "📩 تم الاستلام.\n"
+                "استخدم /start لفتح القائمة، أو اضغط: <b>تشخيص بالذكاء الاصطناعي</b> ثم اكتب وصف حالتك.",
+                kb_main_menu()
+            )
+        return "OK"
+
+    return "OK"
+
+# ====== تشغيل محلي (اختياري) ======
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    if RENDER_EXTERNAL_URL:
-        LOG.info("Running behind Render (webhook mode).")
-    else:
-        LOG.info("Running local Flask on port %s", port)
+    port = int(os.getenv("PORT", "10000"))
+    # إن كنت على Render، سيُشغّل عبر gunicorn من Procfile/runtime
     flask_app.run(host="0.0.0.0", port=port)
