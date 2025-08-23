@@ -1,70 +1,121 @@
 # -*- coding: utf-8 -*-
-import os, json, asyncio, logging
+"""
+Arabi Psycho Bot - Flask + PTB v21 (Webhook)
+"""
+import os
+import json
+import asyncio
+import logging
+import threading
+from typing import Optional
+
 from flask import Flask, request, abort
-
 from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, ContextTypes
-)
+from telegram.ext import Application
 
+# موديول الميزات والقوائم (تأكد أن features.py موجود)
+from features import register_handlers
+
+# ====== إعداد اللوج ======
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger("app")
 
-# ====== الإعدادات من المتغيرات ======
+# ====== متغيرات البيئة ======
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN مفقود في Environment")
+    raise RuntimeError("TELEGRAM_BOT_TOKEN غير موجد في إعدادات Render → Environment")
 
-# ====== بوت تيليجرام ======
-app_tg = Application.builder().token(TELEGRAM_TOKEN).concurrent_updates(True).build()
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")  # مسار آمن بسيط
 
-# ---- أوامر تجريبية أساسية ----
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "أنا شغّال ✅\n"
-        "جرّب /ping\n"
-        "أو اكتب أي رسالة وسيتم الرد عليها."
+# ====== Flask ======
+flask_app = Flask(__name__)
+
+# ====== PTB Application + Event Loop في خيط خلفي ======
+application: Optional[Application] = None
+_loop = asyncio.new_event_loop()
+threading.Thread(target=_loop.run_forever, daemon=True).start()
+
+
+async def _ptb_start():
+    """تهيئة تطبيق PTB وتشغيله (بدون polling؛ نعالج التحديثات يدوياً من الويبهوك)."""
+    global application
+    application = Application.builder().token(TELEGRAM_TOKEN).concurrent_updates(True).build()
+
+    # سجّل الهاندلرز (قوائم/CBT/اختبارات/DSM/…)
+    register_handlers(application)
+
+    await application.initialize()
+    await application.start()
+
+    # اضبط الويبهوك تلقائيًا إذا كان عنوان ريندر معروف
+    if RENDER_URL:
+        url = f"{RENDER_URL}/webhook/{WEBHOOK_SECRET}"
+        try:
+            await application.bot.set_webhook(url=url, drop_pending_updates=False)
+            LOG.info("Webhook set to %s", url)
+        except Exception as e:
+            LOG.warning("set_webhook skipped/failed: %s", e)
+
+
+# شغّل تهيئة PTB داخل اللوب الخلفي
+asyncio.run_coroutine_threadsafe(_ptb_start(), _loop)
+
+# ====== Routes ======
+@flask_app.get("/")
+def index():
+    return "Arabi Psycho OK", 200
+
+
+@flask_app.get("/health")
+def health():
+    return "ok", 200
+
+
+@flask_app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST", "GET"])
+def telegram_webhook():
+    # بعض الخدمات تعمل GET/HEAD للفحص الصحي — نرجّع 200
+    if request.method != "POST":
+        return "Webhook OK", 200
+
+    if application is None:
+        abort(503)
+
+    data = request.get_json(silent=True, force=True)
+    if not data:
+        abort(400)
+
+    try:
+        update = Update.de_json(data, application.bot)
+        # مرّر المعالجة لكوروتين PTB داخل اللوب الخلفي
+        fut = asyncio.run_coroutine_threadsafe(application.process_update(update), _loop)
+        fut.result(timeout=0)  # لا ننتظر التنفيذ؛ فقط حتى تُسجّل المهمّة
+    except Exception as e:
+        LOG.exception("webhook error: %s", e)
+        abort(500)
+
+    return "OK", 200
+
+
+@flask_app.get("/ai_diag")
+def ai_diag():
+    """تشخيص مبسّط لإعدادات الذكاء الاصطناعي (بدون كشف أسرار)."""
+    from features import AI_BASE_URL, AI_MODEL, CONTACT_THERAPIST_URL, CONTACT_PSYCHIATRIST_URL
+    info = {
+        "render_url": RENDER_URL or None,
+        "webhook_path": f"/webhook/{WEBHOOK_SECRET}",
+        "ai_base_url": AI_BASE_URL,
+        "ai_model": AI_MODEL,
+        "ai_key_set": bool(os.getenv("AI_API_KEY", "")),
+        "contact_therapist": CONTACT_THERAPIST_URL,
+        "contact_psychiatrist": CONTACT_PSYCHIATRIST_URL,
+    }
+    return flask_app.response_class(
+        response=json.dumps(info, ensure_ascii=False, indent=2),
+        mimetype="application/json",
+        status=200,
     )
 
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("pong ✅")
 
-# نصوص عادية (نردّ فورًا – بدون ذكاء اصطناعي مؤقتًا لضمان التشغيل)
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.effective_chat.send_action(ChatAction.TYPING)
-    except Exception:
-        pass
-    await update.message.reply_text(f"استلمت: {update.message.text}")
-
-# تسجيل الهاندلرز
-def register_handlers() -> None:
-    app_tg.add_handler(CommandHandler("start", cmd_start))
-    app_tg.add_handler(CommandHandler("ping",  cmd_ping))
-    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
-# نهيّئ ونشغّل التطبيق (مرّة واحدة عند الإقلاع)
-register_handlers()
-asyncio.run(app_tg.initialize())
-asyncio.run(app_tg.start())
-
-# ====== خادم Flask للويبهوك ======
-server = Flask(__name__)
-
-@server.get("/")
-def health():
-    return "Arabi Psycho OK"
-
-@server.post("/webhook/secret")
-def webhook():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        print(">>> incoming update:", json.dumps(data, ensure_ascii=False))
-        update = Update.de_json(data, app_tg.bot)
-        # نعالج التحديث بشكل متزامن
-        asyncio.run(app_tg.process_update(update))
-    except Exception as e:
-        LOG.exception("webhook error")
-        abort(500)
-    return "OK"
+# ========== تشغيل عبر gunicorn ==========
+# Procfile/gunicorn يتولى تشغيل: gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:flask_app
