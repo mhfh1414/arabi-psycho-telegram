@@ -288,8 +288,7 @@ def webhook() -> tuple[str, int]:
     try:
         data = request.get_json(force=True, silent=False)
         update = Update.de_json(data, tg_app.bot)
-        # ندفع التحديث لطابور PTB (لا نستخدم asyncio هنا)
-        tg_app.update_queue.put_nowait(update)
+        tg_app.update_queue.put_nowait(update)  # لا نستخدم asyncio هنا
         return "OK", 200
     except Exception as e:
         LOG.exception("webhook error: %s", e)
@@ -319,14 +318,14 @@ def _ptb_loop():
 
 _ptb_thread_started = False
 
-@app.before_first_request
-def _startup():
+# Flask 3.x: ما عاد فيه before_first_request -> نستخدم before_request مع فلاغ
+@app.before_request
+def _startup_once():
     global _ptb_thread_started
     if not _ptb_thread_started:
         threading.Thread(target=_ptb_loop, daemon=True, name="ptb-loop").start()
         _ptb_thread_started = True
         LOG.info("Started PTB background loop thread.")
 
-# ملاحظة: نقطة الدخول لـ gunicorn هي app:app
-# استخدم أمر التشغيل في Render:
+# ملاحظة: أمر التشغيل في Render يجب أن يكون:
 # gunicorn -w 1 -k gthread -b 0.0.0.0:$PORT app:app
