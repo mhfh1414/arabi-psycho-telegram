@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# app.py — ArabiPsycho Telegram bot on Render (Flask webhook + PTB v21)
+# app.py — ArabiPsycho Telegram bot on Render (Flask webhook + PTB v21, thread-safe)
 
 import os
 import json
@@ -36,7 +36,7 @@ if not TELEGRAM_TOKEN:
     raise RuntimeError("متغير TELEGRAM_BOT_TOKEN غير موجود في الإعدادات (Render > Environment).")
 
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-WEBHOOK_SECRET = "secret"  # رابط الويب هوك سيكون /webhook/secret
+WEBHOOK_SECRET = "secret"  # رابط الويب هوك: /webhook/secret
 
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 AI_API_KEY = os.getenv("AI_API_KEY")
@@ -49,13 +49,12 @@ CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "https://t.me/y
 app = Flask(__name__)
 tg_app: Application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# سنُشغّل PTB في ثريد/لوب مستقل
+# نشغّل PTB في لوب/ثريد مستقل
 _PTB_STARTED = False
 _PTB_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 
 def _ptb_thread_runner(loop: asyncio.AbstractEventLoop):
-    """تشغيل PTB داخل لوب مستقل في ثريد خلفي."""
     asyncio.set_event_loop(loop)
     loop.run_until_complete(tg_app.initialize())
     loop.run_until_complete(tg_app.start())
@@ -74,7 +73,6 @@ def _ptb_thread_runner(loop: asyncio.AbstractEventLoop):
 
 
 def ensure_ptb_started():
-    """يشغّل PTB مرة واحدة فقط."""
     global _PTB_STARTED, _PTB_LOOP
     if _PTB_STARTED:
         return
@@ -138,14 +136,10 @@ def tests_kb() -> InlineKeyboardMarkup:
 
 def personality_kb() -> InlineKeyboardMarkup:
     rows = [
-        [
-            InlineKeyboardButton("حدّية", callback_data="pd_bpd"),
-            InlineKeyboardButton("انعزالية", callback_data="pd_schizoid"),
-        ],
-        [
-            InlineKeyboardButton("نرجسية", callback_data="pd_npd"),
-            InlineKeyboardButton("وسواسية قهرية", callback_data="pd_ocpd"),
-        ],
+        [InlineKeyboardButton("حدّية", callback_data="pd_bpd"),
+         InlineKeyboardButton("انعزالية", callback_data="pd_schizoid")],
+        [InlineKeyboardButton("نرجسية", callback_data="pd_npd"),
+         InlineKeyboardButton("وسواسية قهرية", callback_data="pd_ocpd")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -155,7 +149,6 @@ def personality_kb() -> InlineKeyboardMarkup:
 async def ai_dsm_reply(prompt: str) -> Optional[str]:
     if not AI_API_KEY:
         return None
-
     system = (
         "أنت مساعد طبّي نفسي افتراضي. لا تقدّم تشخيصاً نهائياً ولا علاجاً دوائياً. "
         "اعتمد DSM-5-TR كمراجع وصفية، اطرح أسئلة فرز مختصرة، ثم لخّص احتمالات أولية "
@@ -214,7 +207,6 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("القائمة الرئيسية:", reply_markup=main_menu_kb())
         return
 
-    # CBT
     if data == "cbt":
         msg = (
             "العلاج السلوكي المعرفي (CBT): اختر أداة لبدء خطوة عملية.\n"
@@ -253,14 +245,10 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "cbt_tools":
-        txt = (
-            "🧰 أدوات سريعة:\n"
-            "- تنفس 4-4-6\n- تفعيل الحواس 5-4-3-2-1\n- نشاط ممتع/مفيد 10 دقائق"
-        )
+        txt = "🧰 أدوات سريعة:\n- تنفس 4-4-6\n- تفعيل الحواس 5-4-3-2-1\n- نشاط ممتع/مفيد 10 دقائق"
         await q.edit_message_text(txt, reply_markup=cbt_kb())
         return
 
-    # اختبارات
     if data == "tests":
         await q.edit_message_text("اختر اختباراً:", reply_markup=tests_kb())
         return
@@ -281,12 +269,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # اضطرابات الشخصية
     if data == "personality":
-        await q.edit_message_text(
-            "اختر اضطراباً للاطلاع على ملخص توصيفي:",
-            reply_markup=personality_kb(),
-        )
+        await q.edit_message_text("اختر اضطراباً للاطلاع على ملخص توصيفي:", reply_markup=personality_kb())
         return
 
     pd_map = {
@@ -306,7 +290,6 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # وضع الذكاء الاصطناعي
     if data == "ai_dsm":
         context.user_data[AI_MODE_FLAG] = True
         await q.edit_message_text(
@@ -322,16 +305,17 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
 
-    # وضع الذكاء الاصطناعي
     if context.user_data.get(AI_MODE_FLAG):
         await update.effective_chat.send_action(ChatAction.TYPING)
         ai_text = await ai_dsm_reply(text)
         if ai_text:
-            suffix = "\n\n⚠️ هذه نتيجة أولية ولا تُعد تشخيصاً. يُنصح بالتقييم السريري."
-            await update.effective_message.reply_text(ai_text + suffix, parse_mode=ParseMode.HTML)
+            await update.effective_message.reply_text(
+                ai_text + "\n\n⚠️ هذه نتيجة أولية ولا تُعد تشخيصاً. يُنصح بالتقييم السريري.",
+                parse_mode=ParseMode.HTML,
+            )
         else:
             await update.effective_message.reply_text(
-                "تعذر استخدام الذكاء الاصطناعي حالياً. أعد المحاولة لاحقاً أو تواصل مع مختص."
+                "تعذّر استخدام الذكاء الاصطناعي حالياً. أعد المحاولة لاحقاً أو تواصل مع مختص."
             )
         return
 
@@ -342,7 +326,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # الرد الافتراضي
     await update.effective_message.reply_text("استلمت ✅", reply_markup=main_menu_kb())
 
 
@@ -374,13 +357,18 @@ def root_alive():
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook() -> tuple[str, int]:
     ensure_ptb_started()
-    # تيليجرام يرسل application/json عادة، لكن نتساهل لو ما أرسل الهيدر
-    if "application/json" not in (request.headers.get("content-type") or ""):
-        abort(403)
+    # Telegram يرسل JSON؛ نتساهل في التحقق من الهيدر
     try:
         data = request.get_json(force=True, silent=False)
+    except Exception as e:
+        LOG.exception("bad json: %s", e)
+        abort(400)
+
+    try:
         update = Update.de_json(data, tg_app.bot)
-        tg_app.update_queue.put_nowait(update)
+        # معالجة مباشرة على لوب PTB (أكثر ثباتاً من update_queue)
+        asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _PTB_LOOP)
+        LOG.info("INCOMING update: %s", "callback_query" if update.callback_query else "message")
         return "OK", 200
     except Exception as e:
         LOG.exception("webhook error: %s", e)
