@@ -386,6 +386,28 @@ def root_alive():
 
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook() -> tuple[str, int]:
+    # بعض الطلبات ترسل header مثل: application/json; charset=utf-8
+    ctype = (request.headers.get("content-type") or "").lower()
+    if not ctype.startswith("application/json"):
+        LOG.warning("Blocked request with content-type=%s", ctype)
+        abort(403)
+
+    try:
+        data = request.get_json(force=True, silent=False)
+        # لوق تشخيصي سريع
+        try:
+            preview = data.get("message", {}).get("text") or data.get("callback_query", {}).get("data")
+        except Exception:
+            preview = None
+        LOG.info("INCOMING update: %s", preview)
+
+        update = Update.de_json(data, tg_app.bot)
+        # ندفع التحديث لطابور PTB ليعالجه في الخلفية
+        tg_app.update_queue.put_nowait(update)
+        return "OK", 200
+    except Exception as e:
+        LOG.exception("webhook error: %s", e)
+        return "ERR", 200
     if request.headers.get("content-type") != "application/json":
         abort(403)
     try:
