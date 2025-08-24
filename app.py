@@ -15,6 +15,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
@@ -39,7 +41,7 @@ RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 WEBHOOK_SECRET = "secret"  # رابط الويب هوك: /webhook/secret
 
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-AI_API_KEY = os.getenv("AI_API_KEY")
+AI_API_KEY = os.getenv("AI_API_KEY")  # ضع مفتاح OpenRouter أو OpenAI هنا
 AI_MODEL = os.getenv("AI_MODEL", "openrouter/auto")
 
 CONTACT_THERAPIST_URL = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/your_therapist")
@@ -81,69 +83,65 @@ def ensure_ptb_started():
     t = threading.Thread(target=_ptb_thread_runner, args=(_PTB_LOOP,), daemon=True)
     t.start()
 
-
 # حالة المستخدم لوضع الذكاء الاصطناعي
 AI_MODE_FLAG = "ai_dsm_mode"
 
-# --------------- Keyboards ---------------
-def main_menu_kb() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton("🧠 العلاج السلوكي (CBT)", callback_data="cbt"),
-            InlineKeyboardButton("🧪 اختبارات نفسية", callback_data="tests"),
-        ],
-        [
-            InlineKeyboardButton("🧩 اضطرابات الشخصية", callback_data="personality"),
-            InlineKeyboardButton("🤖 تشخيص DSM (ذكاء اصطناعي)", callback_data="ai_dsm"),
-        ],
-        [
-            InlineKeyboardButton("👩‍⚕️ الأخصائي النفسي", url=CONTACT_THERAPIST_URL),
-            InlineKeyboardButton("👨‍⚕️ الطبيب النفسي", url=CONTACT_PSYCHIATRIST_URL),
-        ],
-    ]
-    return InlineKeyboardMarkup(rows)
+# نصوص الأزرار (لتطابق الرسائل مع الكيبورد السفلي)
+BTN_CBT = "🧠 العلاج السلوكي (CBT)"
+BTN_TESTS = "🧪 اختبارات نفسية"
+BTN_PD = "🧩 اضطرابات الشخصية"
+BTN_AI = "🤖 تشخيص DSM (ذكاء اصطناعي)"
+BTN_THERAPIST = "👩‍⚕️ الأخصائي النفسي"
+BTN_PSYCHIATRIST = "👨‍⚕️ الطبيب النفسي"
 
+# --------------- Keyboards ---------------
+def main_menu_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(BTN_CBT, callback_data="cbt"),
+         InlineKeyboardButton(BTN_TESTS, callback_data="tests")],
+        [InlineKeyboardButton(BTN_PD, callback_data="personality"),
+         InlineKeyboardButton(BTN_AI, callback_data="ai_dsm")],
+        [InlineKeyboardButton(BTN_THERAPIST, url=CONTACT_THERAPIST_URL),
+         InlineKeyboardButton(BTN_PSYCHIATRIST, url=CONTACT_PSYCHIATRIST_URL)],
+    ])
+
+def main_menu_reply() -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(BTN_CBT), KeyboardButton(BTN_TESTS)],
+        [KeyboardButton(BTN_PD), KeyboardButton(BTN_AI)],
+        [KeyboardButton(BTN_THERAPIST), KeyboardButton(BTN_PSYCHIATRIST)],
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع للقائمة", callback_data="back_home")]])
 
-
 def cbt_kb() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton("📝 سجّل المزاج", callback_data="cbt_mood"),
-            InlineKeyboardButton("💭 سجل الأفكار", callback_data="cbt_thought"),
-        ],
-        [
-            InlineKeyboardButton("🚶‍♂️ تعرّض تدريجي", callback_data="cbt_exposure"),
-            InlineKeyboardButton("🧰 أدوات سريعة", callback_data="cbt_tools"),
-        ],
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 سجّل المزاج", callback_data="cbt_mood"),
+         InlineKeyboardButton("💭 سجل الأفكار", callback_data="cbt_thought")],
+        [InlineKeyboardButton("🚶‍♂️ تعرّض تدريجي", callback_data="cbt_exposure"),
+         InlineKeyboardButton("🧰 أدوات سريعة", callback_data="cbt_tools")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
+    ])
 
 def tests_kb() -> InlineKeyboardMarkup:
-    rows = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("PHQ-9 (اكتئاب)", callback_data="test_phq9")],
         [InlineKeyboardButton("GAD-7 (قلق)", callback_data="test_gad7")],
         [InlineKeyboardButton("PCL-5 (صدمة)", callback_data="test_pcl5")],
         [InlineKeyboardButton("اضطرابات الشخصية (مختصر)", callback_data="test_pd")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
+    ])
 
 def personality_kb() -> InlineKeyboardMarkup:
-    rows = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("حدّية", callback_data="pd_bpd"),
          InlineKeyboardButton("انعزالية", callback_data="pd_schizoid")],
         [InlineKeyboardButton("نرجسية", callback_data="pd_npd"),
          InlineKeyboardButton("وسواسية قهرية", callback_data="pd_ocpd")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
+    ])
 
 # --------------- AI helper ---------------
 async def ai_dsm_reply(prompt: str) -> Optional[str]:
@@ -161,6 +159,9 @@ async def ai_dsm_reply(prompt: str) -> Optional[str]:
                 headers={
                     "Authorization": f"Bearer {AI_API_KEY}",
                     "Content-Type": "application/json",
+                    # هذه تساعد بعض المزودين (مثل OpenRouter) على قبول الطلب
+                    "HTTP-Referer": RENDER_URL or "https://arabi-psycho-telegram.onrender.com",
+                    "X-Title": "ArabiPsycho",
                 },
                 json={
                     "model": AI_MODEL,
@@ -172,28 +173,29 @@ async def ai_dsm_reply(prompt: str) -> Optional[str]:
                     "max_tokens": 800,
                 },
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            LOG.error("AI HTTP %s: %s", resp.status_code, resp.text[:500])
+            return None
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
         LOG.exception("AI error: %s", e)
         return None
 
-
 # --------------- Handlers ---------------
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_action(ChatAction.TYPING)
     await update.effective_message.reply_text("pong ✅")
 
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop(AI_MODE_FLAG, None)
     await update.effective_message.reply_text(
         "أنا شغّال ✅\nاختر خدمة من القائمة:",
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_reply(),   # ← كيبورد سفلي دائم
         parse_mode=ParseMode.HTML,
     )
-
+    # ونرسل أيضاً نفس القائمة كرسالة بأزرار Inline (اختياري)
+    await update.effective_message.reply_text("القائمة الرئيسية:", reply_markup=main_menu_inline())
 
 async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -204,7 +206,7 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_home":
         context.user_data.pop(AI_MODE_FLAG, None)
-        await q.edit_message_text("القائمة الرئيسية:", reply_markup=main_menu_kb())
+        await q.edit_message_text("القائمة الرئيسية:", reply_markup=main_menu_inline())
         return
 
     if data == "cbt":
@@ -283,8 +285,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             f"🧩 {pd_map[data]}\n\nللاستشارة المتخصصة:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("👩‍⚕️ الأخصائي النفسي", url=CONTACT_THERAPIST_URL)],
-                [InlineKeyboardButton("👨‍⚕️ الطبيب النفسي", url=CONTACT_PSYCHIATRIST_URL)],
+                [InlineKeyboardButton(BTN_THERAPIST, url=CONTACT_THERAPIST_URL)],
+                [InlineKeyboardButton(BTN_PSYCHIATRIST, url=CONTACT_PSYCHIATRIST_URL)],
                 [InlineKeyboardButton("⬅️ رجوع", callback_data="back_home")],
             ]),
         )
@@ -301,10 +303,48 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+# توجيه نصوص الكيبورد السفلي
+async def route_main_menu_texts(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+    if text == BTN_CBT:
+        await update.effective_message.reply_text(
+            "العلاج السلوكي المعرفي (CBT): اختر أداة:",
+            reply_markup=cbt_kb(),
+        )
+        return True
+    if text == BTN_TESTS:
+        await update.effective_message.reply_text("اختر اختباراً:", reply_markup=tests_kb())
+        return True
+    if text == BTN_PD:
+        await update.effective_message.reply_text("اختر اضطراباً للاطلاع على ملخص:", reply_markup=personality_kb())
+        return True
+    if text == BTN_AI:
+        context.user_data[AI_MODE_FLAG] = True
+        await update.effective_message.reply_text(
+            "✅ دخلت وضع *تشخيص DSM (ذكاء اصطناعي)*.\n"
+            "اكتب الأعراض بإيجاز…",
+            reply_markup=back_kb(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+    if text == BTN_THERAPIST or text == BTN_PSYCHIATRIST:
+        await update.effective_message.reply_text(
+            "للتواصل:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(BTN_THERAPIST, url=CONTACT_THERAPIST_URL)],
+                [InlineKeyboardButton(BTN_PSYCHIATRIST, url=CONTACT_PSYCHIATRIST_URL)],
+            ]),
+        )
+        return True
+    return False
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.effective_message.text or "").strip()
 
+    # لو ضغط زر من الكيبورد السفلي
+    if await route_main_menu_texts(update, context, text):
+        return
+
+    # وضع الذكاء الاصطناعي
     if context.user_data.get(AI_MODE_FLAG):
         await update.effective_chat.send_action(ChatAction.TYPING)
         ai_text = await ai_dsm_reply(text)
@@ -326,14 +366,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.effective_message.reply_text("استلمت ✅", reply_markup=main_menu_kb())
-
+    await update.effective_message.reply_text("استلمت ✅", reply_markup=main_menu_reply())
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "الأوامر:\n/start — القائمة الرئيسية\n/ping — اختبار سريع\n/help — المساعدة"
     )
-
 
 # --------------- Register handlers ---------------
 def register_handlers() -> None:
@@ -344,7 +382,6 @@ def register_handlers() -> None:
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     LOG.info("Handlers registered")
 
-
 register_handlers()
 
 # --------------- Flask routes (webhook) ---------------
@@ -353,11 +390,9 @@ def root_alive():
     ensure_ptb_started()
     return "OK", 200
 
-
 @app.post(f"/webhook/{WEBHOOK_SECRET}")
 def webhook() -> tuple[str, int]:
     ensure_ptb_started()
-    # Telegram يرسل JSON؛ نتساهل في التحقق من الهيدر
     try:
         data = request.get_json(force=True, silent=False)
     except Exception as e:
@@ -366,7 +401,6 @@ def webhook() -> tuple[str, int]:
 
     try:
         update = Update.de_json(data, tg_app.bot)
-        # معالجة مباشرة على لوب PTB (أكثر ثباتاً من update_queue)
         asyncio.run_coroutine_threadsafe(tg_app.process_update(update), _PTB_LOOP)
         LOG.info("INCOMING update: %s", "callback_query" if update.callback_query else "message")
         return "OK", 200
