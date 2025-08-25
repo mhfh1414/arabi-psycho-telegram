@@ -721,44 +721,25 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
+            MENU: [  )
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", cmd_start)],
+        states={
+            # هنا تعديل حالة MENU
             MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, top_router),
                 CallbackQueryHandler(ai_start_cb, pattern="^start_ai$"),
                 CallbackQueryHandler(dsm_start_cb, pattern="^start_dsm$"),
-                CallbackQueryHandler(sapas_msi_router, pattern="^(sapas_start|msi_start|pd_info)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, top_router),
             ],
 
-            CBT_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router)],
-
-            TH_SITU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
-            TH_EMO:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
-            TH_AUTO:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
-            TH_FOR:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
-            TH_AGAINST:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
-            TH_ALT:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_alt)],
-            TH_RERATE:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
-
-            EXPO_WAIT:[MessageHandler(filters.TEXT & ~filters.COMMAND, expo_wait)],
-            EXPO_FLOW:[
-                CallbackQueryHandler(expo_cb, pattern="^expo_(suggest|help)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, expo_flow),
-                CallbackQueryHandler(expo_actions, pattern="^expo_(start|rate)$"),
-            ],
-
-            TESTS_MENU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
-            PANIC_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
-            PTSD_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
-            SURVEY:[
-                # استكمال SAPAS/MSI ثنائي
-                MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)
-            ],
-
-            AI_CHAT:[MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
+            # بقية الحالات…
         },
         fallbacks=[MessageHandler(filters.ALL, fallback)],
         allow_reentry=True
     )
-
     app.add_handler(conv)
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("ping", cmd_ping))
