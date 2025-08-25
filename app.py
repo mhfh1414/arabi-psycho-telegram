@@ -774,5 +774,65 @@ def main():
     else:
         app.run_polling(drop_pending_updates=True)
 
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", cmd_start)],
+        states={
+            # أضفنا أزرار الـAI داخل حالة MENU
+            MENU: [
+                CallbackQueryHandler(ai_start_cb, pattern="^start_ai$"),
+                CallbackQueryHandler(dsm_start_cb, pattern="^start_dsm$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, top_router),
+            ],
+
+            CBT_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_free_text),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, cbt_router),
+            ],
+
+            TH_SITU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_situ)],
+            TH_EMO:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_emo)],
+            TH_AUTO:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_auto)],
+            TH_FOR:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_for)],
+            TH_AGAINST:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_against)],
+            TH_ALT:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_alt)],
+            TH_RERATE:[MessageHandler(filters.TEXT & ~filters.COMMAND, tr_rerate)],
+
+            EXPO_WAIT:[MessageHandler(filters.TEXT & ~filters.COMMAND, expo_wait)],
+            EXPO_FLOW:[
+                CallbackQueryHandler(expo_cb, pattern="^expo_(suggest|help)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, expo_flow),
+                CallbackQueryHandler(expo_actions, pattern="^expo_(start|rate)$"),
+            ],
+
+            TESTS_MENU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+            PANIC_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
+            PTSD_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
+            SURVEY:[MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+
+            AI_CHAT:[MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
+        },
+        fallbacks=[MessageHandler(filters.ALL, fallback)],
+        allow_reentry=True
+    )
+
+    # لا تضيف CallbackQueryHandler للـAI خارج الـConversation
+    app.add_handler(CommandHandler("version", cmd_version))
+    app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
+    app.add_handler(conv)
+
+    if PUBLIC_URL:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path=f"{BOT_TOKEN}",
+            webhook_url=f"{PUBLIC_URL.rstrip('/')}/{BOT_TOKEN}",
+            drop_pending_updates=True
+        )
+    else:
+        app.run_polling(drop_pending_updates=True)
+
 if __name__ == "__main__":
     main()
