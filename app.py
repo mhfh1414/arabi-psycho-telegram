@@ -409,25 +409,68 @@ async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== CBT Router ==========
 async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text or ""
+    t = (update.message.text or "").strip()
+
+    # لو كنا بانتظار إدخال أنشطة التنشيط السلوكي
+    if context.user_data.get("ba_wait"):
+        context.user_data["ba_wait"] = False
+        parts = [s.strip() for s in re.split(r"[,\n،]+", t) if s.strip()]
+        plan = "خطة اليوم:\n• " + "\n• ".join(parts[:3] or ["نشاط بسيط 10–20 دقيقة الآن."])
+        await update.message.reply_text(plan + "\nقيّم مزاجك قبل/بعد 0–10.", reply_markup=CBT_KB)
+        return CBT_MENU
 
     if t == "◀️ رجوع":
-        await update.message.reply_text("رجعناك للقائمة.", reply_markup=TOP_KB);  return MENU
+        await update.message.reply_text("رجعناك للقائمة.", reply_markup=TOP_KB)
+        return MENU
 
-    if has("ما هو CBT", t):  await send_long(update.effective_chat, CBT_TXT["about"], CBT_KB);  return CBT_MENU
-    if has("أخطاء التفكير", t):  await send_long(update.effective_chat, CBT_TXT["dist"], CBT_KB);  return CBT_MENU
-    if has("طرق علاج القلق", t):  await send_long(update.effective_chat, CBT_TXT["anx"], CBT_KB);  return CBT_MENU
-    if has("طرق علاج الاكتئاب", t):  await send_long(update.effective_chat, CBT_TXT["dep"], CBT_KB);  return CBT_MENU
-    if has("إدارة الغضب", t):  await send_long(update.effective_chat, CBT_TXT["anger"], CBT_KB);  return CBT_MENU
-    if has("التخلّص من الخوف", t):  await send_long(update.effective_chat, CBT_TXT["fear"], CBT_KB);  return CBT_MENU
-    if has("الاسترخاء", t):  await update.message.reply_text(CBT_TXT["relax"], reply_markup=CBT_KB);  return CBT_MENU
-    if has("اليقظة", t):  await update.message.reply_text(CBT_TXT["mind"], reply_markup=CBT_KB);  return CBT_MENU
-    if has("حل المشكلات", t):  await update.message.reply_text(CBT_TXT["prob"], reply_markup=CBT_KB);  return CBT_MENU
-    if has("بروتوكول النوم", t):  await update.message.reply_text(CBT_TXT["sleep"], reply_markup=CBT_KB);  return CBT_MENU
+    if has("ما هو CBT", t):
+        await send_long(update.effective_chat, CBT_TXT["about"], CBT_KB)
+        return CBT_MENU
 
-    if has("التنشيط السلوكي", t):
+    if has("أخطاء التفكير", t):
+        await send_long(update.effective_chat, CBT_TXT["dist"], CBT_KB)
+        return CBT_MENU
+
+    if has("الاسترخاء", t) or has("التنفس", t):
+        await update.message.reply_text(CBT_TXT["relax"], reply_markup=CBT_KB)
+        return CBT_MENU
+
+    if has("اليقظة", t) or has("Mindfulness", t):
+        await update.message.reply_text(CBT_TXT["mind"], reply_markup=CBT_KB)
+        return CBT_MENU
+
+    if has("حل المشكلات", t):
+        await update.message.reply_text(CBT_TXT["prob"], reply_markup=CBT_KB)
+        return CBT_MENU
+
+    if has("بروتوكول النوم", t) or has("النوم", t):
+        await update.message.reply_text(CBT_TXT["sleep"], reply_markup=CBT_KB)
+        return CBT_MENU
+
+    if has("التنشيط السلوكي", t) or has("تحسين المزاج", t):
         context.user_data["ba_wait"] = True
-        await update.message.reply_text("أرسل 3 أنشطة صغيرة اليوم (10–20د) مفصولة بفواصل/أسطر.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(
+            "أرسل 3 أنشطة صغيرة اليوم (10–20د) مفصولة بفواصل/أسطر.\n"
+            "أمثلة: مشي 10د – ترتيب رف واحد – اتصال بصديق.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return CBT_MENU
+
+    if has("التعرّض التدريجي", t) or has("التعرض التدريجي", t) or has("قلق/هلع", t):
+        context.user_data["expo"] = ExposureState()
+        await update.message.reply_text("أرسل درجة القلق الحالية 0–10.", reply_markup=ReplyKeyboardRemove())
+        return EXPO_WAIT
+
+    if has("سجلّ الأفكار", t) or has("سجل الأفكار", t):
+        context.user_data["tr"] = ThoughtRecord()
+        await update.message.reply_text("📝 اكتب **الموقف** باختصار (متى/أين/مع من؟).",
+                                       reply_markup=ReplyKeyboardRemove())
+        return TH_SITU
+
+    # لو ما تطابق شيء
+    await update.message.reply_text("اختر وحدة من القائمة:", reply_markup=CBT_KB)
+    return CBT_MENU
+       await update.message.reply_text("أرسل 3 أنشطة صغيرة اليوم (10–20د) مفصولة بفواصل/أسطر.", reply_markup=ReplyKeyboardRemove())
         return CBT_MENU
 
     if has("سجلّ الأفكار", t):
