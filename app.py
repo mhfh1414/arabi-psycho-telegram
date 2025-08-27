@@ -20,7 +20,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arabi-psycho")
 
-VERSION = "2025-08-27.1"
+VERSION = "2025-08-26.2"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -32,8 +32,7 @@ AI_API_KEY  = (os.getenv("AI_API_KEY") or "").strip()
 AI_MODEL    = (os.getenv("AI_MODEL") or "gpt-4o-mini").strip()
 
 # روابط تحويل طبي (اختياري)
-# تم ضبط رابط الأخصائي على حساب تيليجرام الذي زوّدتني به
-CONTACT_THERAPIST_URL    = os.getenv("CONTACT_THERAPIST_URL", "https://t.me/Mhfh1414")
+CONTACT_THERAPIST_URL    = os.getenv("CONTACT_THERAPIST_URL", "")
 CONTACT_PSYCHIATRIST_URL = os.getenv("CONTACT_PSYCHIATRIST_URL", "")
 
 # Webhook أو Polling
@@ -68,7 +67,7 @@ TOP_KB = ReplyKeyboardMarkup(
         ["عربي سايكو 🧠"],
         ["العلاج السلوكي المعرفي (CBT) 💊", "الاختبارات النفسية 📝"],
         ["اختبارات الشخصية 🧩", "اضطرابات الشخصية 📚"],
-        ["الأخصائي النفسي 👨‍⚕️", "التحويل الطبي 🧑‍⚕️"]
+        ["التحويل الطبي 🧑‍⚕️"]
     ],
     resize_keyboard=True
 )
@@ -298,29 +297,81 @@ MSI_BPD = [
   "توتر شديد/أفكار غريبة تحت الضغط؟ (نعم/لا)","تجنّب/اختبارات للآخرين خوف الهجر؟ (نعم/لا)"
 ]
 
-# ========== اضطرابات الشخصية ==========
-PD_TEXT = (
-    "🧩 **اضطرابات الشخصية — DSM-5 (عناقيد A/B/C)**\n\n"
-    "A (غريبة/شاذة): الزورية، الفُصامية/الانعزالية، الفُصامية الشكل.\n"
-    "B (درامية/اندفاعية): المعادية للمجتمع، الحدّية، الهستيرية، النرجسية.\n"
-    "C (قلِقة/خائفة): التجنبية، الاتكالية، الوسواسية القهرية للشخصية.\n\n"
-    "الفكرة: نمط مستمر مبكر نسبياً يؤثر على الإدراك والانفعالات والعلاقات والسلوك.\n"
-    "الاسترشاد: استخدم **SAPAS** (شاشة عامة) و **MSI-BPD** (مؤشرات الحدّية). النتيجة ليست تشخيصًا.\n"
-    "اطلب تقييمًا مختصًا عند الضيق الشديد، إيذاء الذات، أو تدهور العلاقات والعمل."
+# ========== اضطرابات الشخصية (مُحدّث) ==========
+PD_OVERVIEW = (
+    "🧩 **اضطرابات الشخصية — DSM-5 (عناقيد A/B/C)**\n"
+    "A: الزورية، الفصامية/الانعزالية، الفُصامية الشكل.\n"
+    "B: المعادية للمجتمع (سيكوباتية)، الحدّية، الهستيرية، النرجسية.\n"
+    "C: التجنّبية، الاتكالية، الوسواسية القهرية للشخصية.\n\n"
+    "الفكرة: نمط مستمر يبدأ مبكرًا نسبيًا ويؤثر على الإدراك والانفعال والعلاقات والسلوك.\n"
+    "⭐ اختر نوعًا لمعرفة سماته ودعم CBT السريع."
 )
 
-# ========== التحويل الطبي ==========
-def referral_keyboard():
-    rows = []
-    if CONTACT_THERAPIST_URL:
-        rows.append([InlineKeyboardButton("تحويل إلى أخصائي نفسي", url=CONTACT_THERAPIST_URL)])
-    if CONTACT_PSYCHIATRIST_URL:
-        rows.append([InlineKeyboardButton("تحويل إلى طبيب نفسي", url=CONTACT_PSYCHIATRIST_URL)])
-    if not rows:
-        rows.append([InlineKeyboardButton("راسلنا على تيليجرام", url="https://t.me/")])
-    return InlineKeyboardMarkup(rows)
+PD_DETAILS = {
+    "bpd": (
+        "🧷 **الشخصية الحدّية (BPD)**\n"
+        "• سمات: تقلب مشاعر شديد، اندفاعية، خوف قوي من الهجر، علاقات متقلبة، إيذاء ذاتي أحيانًا.\n"
+        "• دعم CBT/DBT: تسمية المشاعر، تحمّل الضيق (ثلج/تنفّس 4-7-8)، توازن المشاعر، "
+        "حدود آمنة، خطط أمان لإيذاء الذات.\n"
+        "• اطلب تقييمًا مختصًا عند أفكار إيذاء/انتحار."
+    ),
+    "avoidant": (
+        "🛡️ **الشخصية التجنّبية (AvPD)**\n"
+        "• سمات: خجل شديد/حساسية للنقد، تجنّب العلاقات خوف الرفض رغم الرغبة بالاختلاط.\n"
+        "• دعم CBT: تعرض اجتماعي تدريجي (من الأسهل للأصعب) مع منع الطمأنة، تصحيح أفكار القصور/الرفض، "
+        "تنشيط سلوكي واتصال آمن قصير يوميًا."
+    ),
+    "ocpd": (
+        "🧰 **الوسواسية القهرية للشخصية (OCPD)** — غير اضطراب الوسواس القهري\n"
+        "• سمات: كمالية مفرطة، صلابة، انشغال بالقواعد/التفاصيل، صعوبة التفويض.\n"
+        "• دعم CBT: مرونة سلوكية صغيرة يوميًا، تجارب ضد الكمالية (إرسال «جيد كفاية»)، "
+        "جدولة راحة، إعادة تقييم «لازم مثالي»."
+    ),
+    "antisocial": (
+        "⚠️ **المعادية للمجتمع/السيكوباتية (ASPD)**\n"
+        "• سمات: تجاهل حقوق الآخرين، خداع/اندفاعية/عدوانية، قلة تعاطف أو ندم.\n"
+        "• دعم: إدارة مخاطر، بدائل غير مؤذية، علاج إدمان إن وجد، التزام قانوني/اجتماعي. متابعة مختصّة."
+    ),
+}
 
-# ========== رسائل موحّدة مع أزرار ==========
+def pd_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("الحدّية (BPD)", callback_data="pd:bpd"),
+            InlineKeyboardButton("التجنّبية (AvPD)", callback_data="pd:avoidant"),
+        ],
+        [
+            InlineKeyboardButton("الوسواسية القهرية (OCPD)", callback_data="pd:ocpd"),
+            InlineKeyboardButton("المعادية للمجتمع (ASPD)", callback_data="pd:antisocial"),
+        ],
+        [InlineKeyboardButton("اختبارات الشخصية (TIPI/SAPAS/MSI)", callback_data="pd:tests")],
+        [InlineKeyboardButton("◀️ رجوع", callback_data="pd:back")],
+    ])
+
+async def pd_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(PD_OVERVIEW, reply_markup=pd_keyboard())
+
+async def pd_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    _, key = q.data.split(":", 1)
+    if key == "back":
+        await q.message.chat.send_message("رجعناك للقائمة.", reply_markup=TOP_KB)
+        return MENU
+    if key == "tests":
+        await q.message.chat.send_message("🧩 اختبارات الشخصية:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("TIPI (الخمسة الكبار)", callback_data="test:tipi")],
+            [InlineKeyboardButton("SAPAS (شاشة عامة)", callback_data="test:sapas"),
+             InlineKeyboardButton("MSI-BPD (حدّية)", callback_data="test:msi")],
+        ]))
+        return MENU
+    txt = PD_DETAILS.get(key)
+    if txt:
+        await q.edit_message_text(txt)
+        await q.message.chat.send_message("اختر نوعًا آخر أو ارجع:", reply_markup=pd_keyboard())
+    return MENU
+
+# ======= رسائل موحّدة مع أزرار للاختبارات =======
 def tests_psych_inline():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("PHQ-9 (اكتئاب)", callback_data="test:phq9"),
@@ -341,35 +392,6 @@ def tests_personality_inline():
          InlineKeyboardButton("MSI-BPD (حدّية)", callback_data="test:msi")],
     ])
 
-def pd_inline():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("ابدأ SAPAS", callback_data="test:sapas"),
-         InlineKeyboardButton("ابدأ MSI-BPD", callback_data="test:msi")],
-        [InlineKeyboardButton("TIPI الخمسة الكبار", callback_data="test:tipi")],
-    ])
-
-# ========== أوامر عامة ==========
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_chat.send_message(
-        "مرحبًا! أنا **عربي سايكو** — مساعد نفسي افتراضي بالذكاء الاصطناعي (ليس بديلاً للطوارئ/التشخيص الطبي).",
-        reply_markup=TOP_KB
-    )
-    return MENU
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/start — القائمة\n/help — المساعدة\n/ping — اختبار سريع")
-
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("pong ✅")
-
-async def cmd_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"نسخة عربي سايكو: {VERSION}")
-
-async def cmd_ai_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"AI_BASE_URL set={bool(AI_BASE_URL)} | KEY set={bool(AI_API_KEY)} | MODEL={AI_MODEL}"
-    )
-
 # ========== المستوى الأعلى ==========
 async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
@@ -388,39 +410,32 @@ async def top_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if has("العلاج السلوكي", t):
         await update.message.reply_text(
-            "اختر وحدة من CBT (يمكنك البدء بـ **خطة CBT شاملة (مقترحة)**):",
-            reply_markup=CBT_KB
+            "اختر وحدة من CBT (ابدأ بـ **خطة CBT شاملة (مقترحة)**):", reply_markup=CBT_KB
         )
         return CBT_MENU
 
     if has("الاختبارات النفسية", t):
-        text = ("📝 **الاختبارات النفسية (زر موحّد)**\n"
-                "اختر اختبارًا: اكتئاب، قلق، رهاب اجتماعي، أرق، ضغوط، رفاه، ضيق نفسي، PTSD، فحص هلع.")
+        text = ("📝 **الاختبارات النفسية**\n"
+                "اختر: اكتئاب، قلق، رهاب اجتماعي، أرق، ضغوط، رفاه، ضيق نفسي، PTSD، فحص هلع.")
         await update.message.reply_text(text, reply_markup=tests_psych_inline())
         return MENU
 
     if has("اختبارات الشخصية", t):
-        text = ("🧩 **اختبارات الشخصية (زر موحّد)**\n"
+        text = ("🧩 **اختبارات الشخصية**\n"
                 "• TIPI (الخمسة الكبار)\n• SAPAS (شاشة عامة)\n• MSI-BPD (مؤشرات الحدّية)")
         await update.message.reply_text(text, reply_markup=tests_personality_inline())
         return MENU
 
     if has("اضطرابات الشخصية", t):
-        await send_long(update.effective_chat, PD_TEXT, pd_inline())
-        return MENU
-
-    if has("الأخصائي النفسي", t) or has("الاخصائي النفسي", t):
-        await update.message.reply_text(
-            "👨‍⚕️ **الأخصائي النفسي**\nللحجز أو الاستفسار اختر:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("حجز جلسة على تيليجرام", url=CONTACT_THERAPIST_URL)],
-                [InlineKeyboardButton("إرسال سؤال الآن", url=CONTACT_THERAPIST_URL)],
-            ])
-        )
+        await pd_open(update, context)
         return MENU
 
     if has("التحويل الطبي", t):
-        await update.message.reply_text("اختر نوع التحويل:", reply_markup=referral_keyboard())
+        await update.message.reply_text("اختر نوع التحويل:", reply_markup=InlineKeyboardMarkup([
+            *([[InlineKeyboardButton("تحويل إلى أخصائي نفسي", url=CONTACT_THERAPIST_URL)]] if CONTACT_THERAPIST_URL else []),
+            *([[InlineKeyboardButton("تحويل إلى طبيب نفسي", url=CONTACT_PSYCHIATRIST_URL)]] if CONTACT_PSYCHIATRIST_URL else []),
+            [InlineKeyboardButton("راسلنا على تيليجرام", url="https://t.me/")],
+        ]))
         return MENU
 
     await update.message.reply_text("اختر من الأزرار أو اكتب /help.", reply_markup=TOP_KB)
@@ -467,33 +482,6 @@ async def ai_chat_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = await ai_respond(text, context)
     await update.message.reply_text(reply, reply_markup=AI_CHAT_KB)
     return AI_CHAT
-
-# ======= بدء اختبار عبر زر =======
-async def start_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    code = q.data.split(":",1)[1]  # مثل: test:phq9
-    mapping = {
-        "phq9":"PHQ-9 اكتئاب","gad7":"GAD-7 قلق","minispin":"Mini-SPIN رهاب اجتماعي","isi7":"ISI-7 أرق",
-        "pss10":"PSS-10 ضغوط","who5":"WHO-5 رفاه","k10":"K10 ضيق نفسي","pcptsd5":"PC-PTSD-5 صدمة","panic":"فحص نوبات الهلع",
-        "tipi":"TIPI الخمسة الكبار","sapas":"SAPAS اضطراب شخصية","msi":"MSI-BPD حدّية"
-    }
-    text = mapping.get(code)
-    if not text:
-        return MENU
-
-    # رسالة صناعية بسيطة متوافقة مع الراوترات
-    class SimpleMessage:
-        def __init__(self, chat, txt): self.chat = chat; self.text = txt
-        async def reply_text(self, *a, **k): return await self.chat.send_message(*a, **k)
-
-    class SimpleUpdate:
-        def __init__(self, chat, txt): self.message = SimpleMessage(chat, txt)
-
-    u2 = SimpleUpdate(q.message.chat, text)
-    if code in ("tipi","sapas","msi"):
-        return await pers_router(u2, context)
-    else:
-        return await tests_router(u2, context)
 
 # ========== CBT Router ==========
 async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -613,12 +601,8 @@ async def expo_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def expo_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    if q.data == "expo_start":
-        await q.edit_message_text("بالتوفيق! عند الانتهاء أرسل الدرجة الجديدة 0–10.")
-        return EXPO_WAIT
-    if q.data == "expo_rate":
-        await q.edit_message_text("أرسل الدرجة الجديدة 0–10.")
-        return EXPO_WAIT
+    if q.data == "expo_start": await q.edit_message_text("بالتوفيق! عند الانتهاء أرسل الدرجة الجديدة 0–10.");  return EXPO_WAIT
+    if q.data == "expo_rate":  await q.edit_message_text("أرسل الدرجة الجديدة 0–10.");  return EXPO_WAIT
     return EXPO_FLOW
 
 # ========== اختبارات ثنائية نعم/لا ==========
@@ -627,6 +611,26 @@ class BinState:
     i: int = 0
     yes: int = 0
     qs: List[str] = field(default_factory=list)
+
+# ======= بدء اختبار عبر زر =======
+async def start_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    code = q.data.split(":",1)[1]
+    mapping = {
+        "phq9":"PHQ-9 اكتئاب","gad7":"GAD-7 قلق","minispin":"Mini-SPIN رهاب اجتماعي","isi7":"ISI-7 أرق",
+        "pss10":"PSS-10 ضغوط","who5":"WHO-5 رفاه","k10":"K10 ضيق نفسي","pcptsd5":"PC-PTSD-5 صدمة","panic":"فحص نوبات الهلع",
+        "tipi":"TIPI الخمسة الكبار","sapas":"SAPAS اضطراب شخصية","msi":"MSI-BPD حدّية"
+    }
+    text = mapping.get(code)
+    if not text: return MENU
+    class M:
+        def __init__(self, chat): self.chat=chat; self.text=text
+        async def reply_text(self, *a, **k): return await q.message.chat.send_message(*a, **k)
+    update2 = Update(update.update_id, message=M(q.message.chat))
+    if code in ("tipi","sapas","msi"):
+        return await pers_router(update2, context)
+    else:
+        return await tests_router(update2, context)
 
 # ========== Router الاختبارات ==========
 async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -654,7 +658,6 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["pc"] = BinState(i=0, yes=0, qs=PC_PTSD5)
         await update.message.reply_text(PC_PTSD5[0], reply_markup=ReplyKeyboardRemove());  return PTSD_Q
 
-    # الاستبيانات الرقمية
     s_map = {"phq9":PHQ9,"gad7":GAD7,"minispin":MINISPIN,"tipi":TIPI,"isi7":ISI7,"pss10":PSS10,"who5":WHO5,"k10":K10}
     s0 = s_map[key]
     s = Survey(s0.id, s0.title, list(s0.items), s0.scale, s0.min_v, s0.max_v, list(s0.reverse))
@@ -662,7 +665,7 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"بدء **{s.title}**.\n{survey_prompt(s,0)}", reply_markup=ReplyKeyboardRemove())
     return SURVEY
 
-# اختبارات الشخصية (TIPI/SAPAS/MSI)
+# اختبارات الشخصية
 async def pers_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
     if t == "◀️ رجوع":
@@ -687,61 +690,44 @@ async def pers_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # تدفق الهلع
 async def panic_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st: BinState = context.user_data["panic"]; ans = (update.message.text or "").strip().lower()
-    if ans not in ("نعم","لا","yes","no"):
-        await update.message.reply_text("أجب بـ نعم/لا.");  return PANIC_Q
+    if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return PANIC_Q
     st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-    if st.i < len(st.qs):
-        await update.message.reply_text(st.qs[st.i]);  return PANIC_Q
+    if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return PANIC_Q
     msg = "إيجابي — قد تكون هناك نوبات هلع" if st.yes==2 else "سلبي — لا مؤشر قوي حاليًا"
-    context.user_data.pop("panic", None)  # تنظيف الحالة
     await update.message.reply_text(f"**نتيجة فحص الهلع:** {msg}", reply_markup=TOP_KB);  return MENU
 
 # تدفق PTSD
 async def ptsd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st: BinState = context.user_data["pc"]; ans = (update.message.text or "").strip().lower()
-    if ans not in ("نعم","لا","yes","no"):
-        await update.message.reply_text("أجب بـ نعم/لا.");  return PTSD_Q
+    if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return PTSD_Q
     st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-    if st.i < len(st.qs):
-        await update.message.reply_text(st.qs[st.i]);  return PTSD_Q
+    if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return PTSD_Q
     result = "إيجابي (≥3 «نعم») — يُوصى بالتقييم." if st.yes>=3 else "سلبي — أقل من حد الإشارة."
-    context.user_data.pop("pc", None)  # تنظيف الحالة
     await update.message.reply_text(f"**PC-PTSD-5:** {st.yes}/5 — {result}", reply_markup=TOP_KB);  return MENU
 
-# تدفق الاستبيانات (ثنائية أو درجات)
+# تدفق الاستبيانات
 async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ثنائي (SAPAS / MSI)
     if "bin" in context.user_data:
         st: BinState = context.user_data["bin"]; ans = (update.message.text or "").strip().lower()
-        if ans not in ("نعم","لا","yes","no"):
-            await update.message.reply_text("أجب بـ نعم/لا.");  return SURVEY
+        if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return SURVEY
         st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-        if st.i < len(st.qs):
-            await update.message.reply_text(st.qs[st.i]);  return SURVEY
+        if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return SURVEY
         if len(st.qs)==8:
             cut=3; msg = f"**SAPAS:** {st.yes}/8 — " + ("إيجابي (≥3) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
         else:
             cut=7; msg = f"**MSI-BPD:** {st.yes}/10 — " + ("إيجابي (≥7) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
-        context.user_data.pop("bin", None)  # تنظيف
         await update.message.reply_text(msg, reply_markup=TOP_KB)
+        context.user_data.pop("bin", None)
         return MENU
 
-    # درجات
-    s: Survey = context.user_data.get("s")
-    i = context.user_data.get("s_i", 0)
-    if not s:
-        await update.message.reply_text("لا توجد جلسة اختبار قيد التشغيل. اختر اختبارًا من القائمة.", reply_markup=TOP_KB)
-        return MENU
-
+    s: Survey = context.user_data["s"]; i = context.user_data["s_i"]
     n = to_int(update.message.text)
     if n is None or not (s.min_v <= n <= s.max_v):
         await update.message.reply_text(f"أدخل رقمًا بين {s.min_v} و{s.max_v}.");  return SURVEY
     s.ans.append(n); i += 1
     if i >= len(s.items):
-        # حساب النتائج النهائية
         if s.id=="gad7":
             total=sum(s.ans); lvl = "طبيعي/خفيف جدًا" if total<=4 else "قلق خفيف" if total<=9 else "قلق متوسط" if total<=14 else "قلق شديد"
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**GAD-7:** {total}/21 — {lvl}", reply_markup=TOP_KB);  return MENU
         if s.id=="phq9":
             total=sum(s.ans)
@@ -751,11 +737,9 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif total<=19: lvl="متوسط-شديد"
             else: lvl="شديد"
             warn = "\n⚠️ بند أفكار الإيذاء >0 — اطلب مساعدة فورية." if s.ans[8]>0 else ""
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**PHQ-9:** {total}/27 — {lvl}{warn}", reply_markup=TOP_KB);  return MENU
         if s.id=="minispin":
             total=sum(s.ans); msg="مؤشر رهاب اجتماعي محتمل" if total>=6 else "أقل من حد الإشارة"
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**Mini-SPIN:** {total}/12 — {msg}", reply_markup=TOP_KB);  return MENU
         if s.id=="tipi":
             vals = s.ans[:]
@@ -766,7 +750,6 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"• الانبساط: {extr:.1f} ({lab(extr)})\n• التوافق: {agre:.1f} ({lab(agre)})\n"
                  f"• الانضباط: {cons:.1f} ({lab(cons)})\n• الاستقرار الانفعالي: {emot:.1f} ({lab(emot)})\n"
                  f"• الانفتاح: {open_:.1f} ({lab(open_)})")
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(msg, reply_markup=TOP_KB);  return MENU
         if s.id=="isi7":
             total=sum(s.ans)
@@ -774,19 +757,16 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif total<=14: lvl="أرق خفيف"
             elif total<=21: lvl="أرق متوسط"
             else: lvl="أرق شديد"
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**ISI-7:** {total}/28 — {lvl}", reply_markup=TOP_KB);  return MENU
         if s.id=="pss10":
             vals=s.ans[:]
             for idx in s.reverse: vals[idx] = s.max_v - vals[idx]
             total=sum(vals)
             lvl = "منخفض" if total<=13 else "متوسط" if total<=26 else "عالٍ"
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**PSS-10:** {total}/40 — ضغط {lvl}", reply_markup=TOP_KB);  return MENU
         if s.id=="who5":
             total=sum(s.ans)*4
             note="منخفض (≤50) — يُستحسن تحسين الروتين والتواصل/التقييم." if total<=50 else "جيد."
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**WHO-5:** {total}/100 — {note}", reply_markup=TOP_KB);  return MENU
         if s.id=="k10":
             total=sum(s.ans)
@@ -794,7 +774,6 @@ async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif total<=24: lvl="متوسط"
             elif total<=29: lvl="شديد"
             else: lvl="شديد جدًا"
-            context.user_data.pop("s", None); context.user_data.pop("s_i", None)
             await update.message.reply_text(f"**K10:** {total}/50 — ضيق {lvl}", reply_markup=TOP_KB);  return MENU
 
         await update.message.reply_text("تم الحساب.", reply_markup=TOP_KB);  return MENU
@@ -819,6 +798,8 @@ def main():
                 CallbackQueryHandler(ai_start_dsm_cb, pattern="^start_ai_dsm$"),
                 CallbackQueryHandler(dsm_start_cb, pattern="^start_dsm$"),
                 CallbackQueryHandler(start_test_cb, pattern=r"^test:[\w\-]+$"),
+                CallbackQueryHandler(expo_cb, pattern=r"^expo_(suggest|help)$"),
+                CallbackQueryHandler(pd_cb, pattern=r"^pd:(.+)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, top_router),
             ],
 
@@ -836,7 +817,6 @@ def main():
 
             EXPO_WAIT:[MessageHandler(filters.TEXT & ~filters.COMMAND, expo_wait)],
             EXPO_FLOW:[
-                CallbackQueryHandler(expo_cb, pattern=r"^expo_(suggest|help)$"),  # ← نُقل من MENU إلى هنا
                 MessageHandler(filters.TEXT & ~filters.COMMAND, expo_flow),
                 CallbackQueryHandler(expo_actions, pattern=r"^expo_(start|rate)$"),
             ],
@@ -853,11 +833,12 @@ def main():
         allow_reentry=True
     )
 
-    # سجّل الأوامر فقط خارج المحادثة
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("ping", cmd_ping))
-    app.add_handler(CommandHandler("version", cmd_version))
-    app.add_handler(CommandHandler("ai_diag", cmd_ai_diag))
+    app.add_handler(CommandHandler("help", lambda u,c: u.message.reply_text("/start — القائمة\n/help — المساعدة\n/ping — اختبار سريع")))
+    app.add_handler(CommandHandler("ping", lambda u,c: u.message.reply_text("pong ✅")))
+    app.add_handler(CommandHandler("version", lambda u,c: u.message.reply_text(f"نسخة عربي سايكو: {VERSION}")))
+    app.add_handler(CommandHandler("ai_diag", lambda u,c: u.message.reply_text(
+        f"AI_BASE_URL set={bool(AI_BASE_URL)} | KEY set={bool(AI_API_KEY)} | MODEL={AI_MODEL}"
+    )))
     app.add_handler(conv)
 
     if PUBLIC_URL:
