@@ -1,4 +1,4 @@
-# app.py — عربي سايكو: ذكاء اصطناعي + DSM5 استرشادي + CBT موسّع + اختبارات + شخصية + تحويل طبي
+# app.py — عربي سايكو: ذكاء اصطناعي + DSM5 استرشادي + CBT موسّع + اختبارات بأزرار أرقام/نعم-لا + شخصية + تحويل طبي
 # Python 3.10+ | python-telegram-bot v21.6
 
 import os, re, asyncio, json, logging
@@ -20,7 +20,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("arabi-psycho")
 
-VERSION = "2025-08-27.1"
+VERSION = "2025-08-27.2"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -94,7 +94,7 @@ TH_SITU, TH_EMO, TH_AUTO, TH_FOR, TH_AGAINST, TH_ALT, TH_RERATE = range(10,17)
 EXPO_WAIT, EXPO_FLOW = range(20,22)
 PANIC_Q, PTSD_Q, SURVEY = range(30,33)
 
-# ========== أمان (كلمات أزمة) ==========
+# ========== أمان ==========
 CRISIS_WORDS = ["انتحار","سأؤذي نفسي","اذي نفسي","قتل نفسي","ما ابغى اعيش","فقدت الامل","اريد اموت","ابي اموت"]
 def is_crisis(txt: str) -> bool:
     low = (txt or "").replace("أ","ا").replace("إ","ا").replace("آ","ا").lower()
@@ -225,7 +225,25 @@ class Survey:
     ans: List[int] = field(default_factory=list)
 
 def survey_prompt(s: Survey, i: int) -> str:
-    return f"({i+1}/{len(s.items)}) {s.items[i]}\n{ s.scale }"
+    return f"({i+1}/{len(s.items)}) {s.items[i]}\n{ s.scale }\nاختر رقمًا من الأزرار:"
+
+# ======== لوحات الأزرار للأسئلة ========
+def scale_kb(min_v: int, max_v: int) -> InlineKeyboardMarkup:
+    btns = [InlineKeyboardButton(str(i), callback_data=f"s:{i}") for i in range(min_v, max_v+1)]
+    rows, row = [], []
+    for b in btns:
+        row.append(b)
+        if len(row) == 5:
+            rows.append(row); row=[]
+    if row: rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+def yes_no_kb(tag: str) -> InlineKeyboardMarkup:
+    # tag أحد: "panic" | "pc" | "bin"  (نفس الدالة لكل اختبارات نعم/لا)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("نعم", callback_data=f"{tag}:yes"),
+         InlineKeyboardButton("لا",  callback_data=f"{tag}:no")]
+    ])
 
 # ========== بنوك أسئلة ==========
 PHQ9 = Survey("phq9","PHQ-9 — الاكتئاب",
@@ -244,8 +262,8 @@ MINISPIN = Survey("minispin","Mini-SPIN — الرهاب الاجتماعي",
 
 TIPI = Survey("tipi","TIPI — الخمسة الكبار (10)",
     ["منفتح/اجتماعي","ناقد قليل المودة (عكسي)","منظم/موثوق","يتوتر بسهولة",
-    "منفتح على الخبرة","انطوائي/خجول (عكسي)","ودود/متعاون","مهمل/عشوائي (عكسي)",
-    "هادئ وثابت (عكسي)","تقليدي/غير خيالي (عكسي)"],
+     "منفتح على الخبرة","انطوائي/خجول (عكسي)","ودود/متعاون","مهمل/عشوائي (عكسي)",
+     "هادئ وثابت (عكسي)","تقليدي/غير خيالي (عكسي)"],
     "قيّم 1–7 (1=لا تنطبق…7=تنطبق تمامًا)",1,7,reverse=[1,5,7,8,9])
 
 ISI7 = Survey("isi7","ISI-7 — شدّة الأرق",
@@ -556,7 +574,7 @@ async def cbt_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر وحدة من القائمة:", reply_markup=CBT_KB)
     return CBT_MENU
 
-# سجل الأفكار (تدفّق متعدد الخطوات)
+# سجل الأفكار
 async def tr_situ(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tr: ThoughtRecord = context.user_data["tr"]; tr.situation = update.message.text.strip()
     await update.message.reply_text("ما الشعور الآن؟ اكتب الاسم وقيمته (مثال: قلق 7/10).");  return TH_EMO
@@ -641,15 +659,14 @@ class BinState:
 # ======= بدء اختبار عبر زر =======
 async def start_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    code = q.data.split(":",1)[1]  # مثل: test:phq9
+    code = q.data.split(":",1)[1]
     mapping = {
         "phq9":"PHQ-9 اكتئاب","gad7":"GAD-7 قلق","minispin":"Mini-SPIN رهاب اجتماعي","isi7":"ISI-7 أرق",
         "pss10":"PSS-10 ضغوط","who5":"WHO-5 رفاه","k10":"K10 ضيق نفسي","pcptsd5":"PC-PTSD-5 صدمة","panic":"فحص نوبات الهلع",
         "tipi":"TIPI الخمسة الكبار","sapas":"SAPAS اضطراب شخصية","msi":"MSI-BPD حدّية"
     }
     text = mapping.get(code)
-    if not text:
-        return MENU
+    if not text: return MENU
     class M:
         def __init__(self, chat): self.chat=chat; self.text=text
         async def reply_text(self, *a, **k): return await q.message.chat.send_message(*a, **k)
@@ -658,6 +675,133 @@ async def start_test_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await pers_router(update2, context)
     else:
         return await tests_router(update2, context)
+
+# ======= مُساعد إرسال السؤال الرقمي بأزرار =======
+async def ask_numeric_question(chat, s: Survey, i: int, edit_msg=None):
+    txt = survey_prompt(s, i)
+    kb = scale_kb(s.min_v, s.max_v)
+    if edit_msg:
+        await edit_msg.edit_text(txt, reply_markup=kb)
+    else:
+        await chat.send_message(txt, reply_markup=kb)
+
+# ======= رد على ضغط زر رقم في الاستبيانات الرقمية =======
+async def survey_ans_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    n = int(q.data.split(":",1)[1])
+    s: Survey = context.user_data.get("s")
+    i = context.user_data.get("s_i", 0)
+    if not s: 
+        await q.message.edit_text("لا توجد استبانة نشطة.")
+        return MENU
+    if not (s.min_v <= n <= s.max_v):
+        return SURVEY
+    s.ans.append(n); i += 1
+    if i >= len(s.items):
+        # حساب النتيجة (نفس منطق النص)
+        txt = ""
+        if s.id=="gad7":
+            total=sum(s.ans); lvl = "طبيعي/خفيف جدًا" if total<=4 else "قلق خفيف" if total<=9 else "قلق متوسط" if total<=14 else "قلق شديد"
+            txt = f"**GAD-7:** {total}/21 — {lvl}"
+        elif s.id=="phq9":
+            total=sum(s.ans)
+            if   total<=4: lvl="لا/خفيف جدًا"
+            elif total<=9: lvl="خفيف"
+            elif total<=14: lvl="متوسط"
+            elif total<=19: lvl="متوسط-شديد"
+            else: lvl="شديد"
+            warn = "\n⚠️ بند أفكار الإيذاء >0 — اطلب مساعدة فورية." if s.ans[8]>0 else ""
+            txt = f"**PHQ-9:** {total}/27 — {lvl}{warn}"
+        elif s.id=="minispin":
+            total=sum(s.ans); msg="مؤشر رهاب اجتماعي محتمل" if total>=6 else "أقل من حد الإشارة"
+            txt = f"**Mini-SPIN:** {total}/12 — {msg}"
+        elif s.id=="tipi":
+            vals = s.ans[:]
+            for idx in s.reverse: vals[idx] = 8 - vals[idx]
+            extr=(vals[0]+vals[5])/2; agre=(vals[1]+vals[6])/2; cons=(vals[2]+vals[7])/2; emot=(vals[3]+vals[8])/2; open_=(vals[4]+vals[9])/2
+            def lab(x): return "عالٍ" if x>=5.5 else ("منخفض" if x<=2.5 else "متوسط")
+            txt=(f"**TIPI (1–7):**\n"
+                 f"• الانبساط: {extr:.1f} ({lab(extr)})\n• التوافق: {agre:.1f} ({lab(agre)})\n"
+                 f"• الانضباط: {cons:.1f} ({lab(cons)})\n• الاستقرار الانفعالي: {emot:.1f} ({lab(emot)})\n"
+                 f"• الانفتاح: {open_:.1f} ({lab(open_)})")
+        elif s.id=="isi7":
+            total=sum(s.ans)
+            if   total<=7: lvl="أرق ضئيل"
+            elif total<=14: lvl="أرق خفيف"
+            elif total<=21: lvl="أرق متوسط"
+            else: lvl="أرق شديد"
+            txt = f"**ISI-7:** {total}/28 — {lvl}"
+        elif s.id=="pss10":
+            vals=s.ans[:]
+            for idx in s.reverse: vals[idx] = s.max_v - vals[idx]
+            total=sum(vals)
+            lvl = "منخفض" if total<=13 else "متوسط" if total<=26 else "عالٍ"
+            txt = f"**PSS-10:** {total}/40 — ضغط {lvl}"
+        elif s.id=="who5":
+            total=sum(s.ans)*4
+            note="منخفض (≤50) — يُستحسن تحسين الروتين والتواصل/التقييم." if total<=50 else "جيد."
+            txt = f"**WHO-5:** {total}/100 — {note}"
+        elif s.id=="k10":
+            total=sum(s.ans)
+            if   total<=19: lvl="خفيف"
+            elif total<=24: lvl="متوسط"
+            elif total<=29: lvl="شديد"
+            else: lvl="شديد جدًا"
+            txt = f"**K10:** {total}/50 — ضيق {lvl}"
+        else:
+            txt = "تم الحساب."
+
+        await q.message.edit_text("تم تسجيل الإجابة الأخيرة ✅")
+        await q.message.chat.send_message(txt, reply_markup=TOP_KB)
+        return MENU
+    else:
+        context.user_data["s_i"] = i
+        await ask_numeric_question(q.message.chat, s, i, edit_msg=q.message)
+        return SURVEY
+
+# ======= رد على ضغط زر نعم/لا =======
+async def bin_ans_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    tag, ans = q.data.split(":")
+    yes = 1 if ans == "yes" else 0
+
+    # حدّد أي حالة
+    if tag == "panic":
+        st: BinState = context.user_data["panic"]
+        st.yes += yes; st.i += 1
+        if st.i < len(st.qs):
+            await q.message.edit_text(st.qs[st.i], reply_markup=yes_no_kb("panic"))
+            return PANIC_Q
+        msg = "إيجابي — قد تكون هناك نوبات هلع" if st.yes==2 else "سلبي — لا مؤشر قوي حاليًا"
+        await q.message.edit_text("تم ✅")
+        await q.message.chat.send_message(f"**نتيجة فحص الهلع:** {msg}", reply_markup=TOP_KB)
+        return MENU
+
+    if tag == "pc":
+        st: BinState = context.user_data["pc"]
+        st.yes += yes; st.i += 1
+        if st.i < len(st.qs):
+            await q.message.edit_text(st.qs[st.i], reply_markup=yes_no_kb("pc"))
+            return PTSD_Q
+        result = "إيجابي (≥3 «نعم») — يُوصى بالتقييم." if st.yes>=3 else "سلبي — أقل من حد الإشارة."
+        await q.message.edit_text("تم ✅")
+        await q.message.chat.send_message(f"**PC-PTSD-5:** {st.yes}/5 — {result}", reply_markup=TOP_KB)
+        return MENU
+
+    # tag == "bin" (SAPAS/MSI)
+    st: BinState = context.user_data["bin"]
+    st.yes += yes; st.i += 1
+    if st.i < len(st.qs):
+        await q.message.edit_text(st.qs[st.i], reply_markup=yes_no_kb("bin"))
+        return SURVEY
+    if len(st.qs)==8:
+        cut=3; msg = f"**SAPAS:** {st.yes}/8 — " + ("إيجابي (≥3) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
+    else:
+        cut=7; msg = f"**MSI-BPD:** {st.yes}/10 — " + ("إيجابي (≥7) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
+    await q.message.edit_text("تم ✅")
+    await q.message.chat.send_message(msg, reply_markup=TOP_KB)
+    context.user_data.pop("bin", None)
+    return MENU
 
 # ========== Router الاختبارات ==========
 async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,17 +823,19 @@ async def tests_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "خلال 4 أسابيع: هل حدثت لديك نوبات هلع مفاجئة؟ (نعم/لا)",
             "هل تخاف من حدوث نوبة أخرى أو تتجنب أماكن بسببها؟ (نعم/لا)"
         ])
-        await update.message.reply_text(context.user_data["panic"].qs[0], reply_markup=ReplyKeyboardRemove());  return PANIC_Q
+        await update.message.reply_text(context.user_data["panic"].qs[0], reply_markup=yes_no_kb("panic"));  return PANIC_Q
 
     if key == "pcptsd5":
         context.user_data["pc"] = BinState(i=0, yes=0, qs=PC_PTSD5)
-        await update.message.reply_text(PC_PTSD5[0], reply_markup=ReplyKeyboardRemove());  return PTSD_Q
+        await update.message.reply_text(PC_PTSD5[0], reply_markup=yes_no_kb("pc"));  return PTSD_Q
 
+    # الاستبيانات الرقمية — أرسل السؤال الأول بأزرار أرقام
     s_map = {"phq9":PHQ9,"gad7":GAD7,"minispin":MINISPIN,"tipi":TIPI,"isi7":ISI7,"pss10":PSS10,"who5":WHO5,"k10":K10}
     s0 = s_map[key]
     s = Survey(s0.id, s0.title, list(s0.items), s0.scale, s0.min_v, s0.max_v, list(s0.reverse))
     context.user_data["s"] = s; context.user_data["s_i"] = 0
-    await update.message.reply_text(f"بدء **{s.title}**.\n{survey_prompt(s,0)}", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(f"بدء **{s.title}**.", reply_markup=ReplyKeyboardRemove())
+    await ask_numeric_question(update.message.chat, s, 0)
     return SURVEY
 
 # اختبارات الشخصية (TIPI/SAPAS/MSI)
@@ -698,117 +844,43 @@ async def pers_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if t == "◀️ رجوع":
         await update.message.reply_text("رجعناك للقائمة.", reply_markup=TOP_KB);  return MENU
 
-    if t in ("SAPAS اضطراب شخصية","MSI-BPD حدّية","TIPI الخمسة الكبار"):
-        if t == "SAPAS اضطراب شخصية":
-            context.user_data["bin"] = BinState(i=0, yes=0, qs=SAPAS)
-            await update.message.reply_text(SAPAS[0], reply_markup=ReplyKeyboardRemove());  return SURVEY
-        if t == "MSI-BPD حدّية":
-            context.user_data["bin"] = BinState(i=0, yes=0, qs=MSI_BPD)
-            await update.message.reply_text(MSI_BPD[0], reply_markup=ReplyKeyboardRemove());  return SURVEY
-        if t == "TIPI الخمسة الكبار":
-            s = Survey(TIPI.id, TIPI.title, list(TIPI.items), TIPI.scale, TIPI.min_v, TIPI.max_v, list(TIPI.reverse))
-            context.user_data["s"] = s; context.user_data["s_i"] = 0
-            await update.message.reply_text(f"بدء **{s.title}**.\n{survey_prompt(s,0)}", reply_markup=ReplyKeyboardRemove())
-            return SURVEY
+    if t == "SAPAS اضطراب شخصية":
+        context.user_data["bin"] = BinState(i=0, yes=0, qs=SAPAS)
+        await update.message.reply_text(SAPAS[0], reply_markup=yes_no_kb("bin"));  return SURVEY
+
+    if t == "MSI-BPD حدّية":
+        context.user_data["bin"] = BinState(i=0, yes=0, qs=MSI_BPD)
+        await update.message.reply_text(MSI_BPD[0], reply_markup=yes_no_kb("bin"));  return SURVEY
+
+    if t == "TIPI الخمسة الكبار":
+        s = Survey(TIPI.id, TIPI.title, list(TIPI.items), TIPI.scale, TIPI.min_v, TIPI.max_v, list(TIPI.reverse))
+        context.user_data["s"] = s; context.user_data["s_i"] = 0
+        await update.message.reply_text(f"بدء **{s.title}**.", reply_markup=ReplyKeyboardRemove())
+        await ask_numeric_question(update.message.chat, s, 0)
+        return SURVEY
 
     await update.message.reply_text("اختر اختبار شخصية:", reply_markup=tests_personality_inline())
     return MENU
 
-# تدفق الهلع
+# تدفق الهلع (نص احتياطي لو كتب العميل بدلاً من الضغط)
 async def panic_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st: BinState = context.user_data["panic"]; ans = (update.message.text or "").strip().lower()
-    if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return PANIC_Q
-    st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-    if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return PANIC_Q
-    msg = "إيجابي — قد تكون هناك نوبات هلع" if st.yes==2 else "سلبي — لا مؤشر قوي حاليًا"
-    await update.message.reply_text(f"**نتيجة فحص الهلع:** {msg}", reply_markup=TOP_KB);  return MENU
+    if ans not in ("نعم","لا","yes","no"): 
+        await update.message.reply_text("اضغط نعم/لا من الأزرار.", reply_markup=yes_no_kb("panic"));  return PANIC_Q
+    return PANIC_Q  # الأزرار هي الأساس
 
-# تدفق PTSD
+# تدفق PTSD (نص احتياطي)
 async def ptsd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st: BinState = context.user_data["pc"]; ans = (update.message.text or "").strip().lower()
-    if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return PTSD_Q
-    st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-    if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return PTSD_Q
-    result = "إيجابي (≥3 «نعم») — يُوصى بالتقييم." if st.yes>=3 else "سلبي — أقل من حد الإشارة."
-    await update.message.reply_text(f"**PC-PTSD-5:** {st.yes}/5 — {result}", reply_markup=TOP_KB);  return MENU
+    if ans not in ("نعم","لا","yes","no"): 
+        await update.message.reply_text("اضغط نعم/لا من الأزرار.", reply_markup=yes_no_kb("pc"));  return PTSD_Q
+    return PTSD_Q
 
-# تدفق الاستبيانات (ثنائية أو درجات)
+# تدفق الاستبيانات الرقمية (نص احتياطي)
 async def survey_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ثنائي (SAPAS / MSI)
-    if "bin" in context.user_data:
-        st: BinState = context.user_data["bin"]; ans = (update.message.text or "").strip().lower()
-        if ans not in ("نعم","لا","yes","no"): await update.message.reply_text("أجب بـ نعم/لا.");  return SURVEY
-        st.yes += 1 if ans in ("نعم","yes") else 0; st.i += 1
-        if st.i < len(st.qs): await update.message.reply_text(st.qs[st.i]);  return SURVEY
-        if len(st.qs)==8:
-            cut=3; msg = f"**SAPAS:** {st.yes}/8 — " + ("إيجابي (≥3) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
-        else:
-            cut=7; msg = f"**MSI-BPD:** {st.yes}/10 — " + ("إيجابي (≥7) يُستحسن التقييم." if st.yes>=cut else "سلبي.")
-        await update.message.reply_text(msg, reply_markup=TOP_KB)
-        context.user_data.pop("bin", None)
-        return MENU
-
-    # درجات
     s: Survey = context.user_data["s"]; i = context.user_data["s_i"]
-    n = to_int(update.message.text)
-    if n is None or not (s.min_v <= n <= s.max_v):
-        await update.message.reply_text(f"أدخل رقمًا بين {s.min_v} و{s.max_v}.");  return SURVEY
-    s.ans.append(n); i += 1
-    if i >= len(s.items):
-        if s.id=="gad7":
-            total=sum(s.ans); lvl = "طبيعي/خفيف جدًا" if total<=4 else "قلق خفيف" if total<=9 else "قلق متوسط" if total<=14 else "قلق شديد"
-            await update.message.reply_text(f"**GAD-7:** {total}/21 — {lvl}", reply_markup=TOP_KB);  return MENU
-        if s.id=="phq9":
-            total=sum(s.ans)
-            if   total<=4: lvl="لا/خفيف جدًا"
-            elif total<=9: lvl="خفيف"
-            elif total<=14: lvl="متوسط"
-            elif total<=19: lvl="متوسط-شديد"
-            else: lvl="شديد"
-            warn = "\n⚠️ بند أفكار الإيذاء >0 — اطلب مساعدة فورية." if s.ans[8]>0 else ""
-            await update.message.reply_text(f"**PHQ-9:** {total}/27 — {lvl}{warn}", reply_markup=TOP_KB);  return MENU
-        if s.id=="minispin":
-            total=sum(s.ans); msg="مؤشر رهاب اجتماعي محتمل" if total>=6 else "أقل من حد الإشارة"
-            await update.message.reply_text(f"**Mini-SPIN:** {total}/12 — {msg}", reply_markup=TOP_KB);  return MENU
-        if s.id=="tipi":
-            vals = s.ans[:]
-            for idx in s.reverse: vals[idx] = 8 - vals[idx]
-            extr=(vals[0]+vals[5])/2; agre=(vals[1]+vals[6])/2; cons=(vals[2]+vals[7])/2; emot=(vals[3]+vals[8])/2; open_=(vals[4]+vals[9])/2
-            def lab(x): return "عالٍ" if x>=5.5 else ("منخفض" if x<=2.5 else "متوسط")
-            msg=(f"**TIPI (1–7):**\n"
-                 f"• الانبساط: {extr:.1f} ({lab(extr)})\n• التوافق: {agre:.1f} ({lab(agre)})\n"
-                 f"• الانضباط: {cons:.1f} ({lab(cons)})\n• الاستقرار الانفعالي: {emot:.1f} ({lab(emot)})\n"
-                 f"• الانفتاح: {open_:.1f} ({lab(open_)})")
-            await update.message.reply_text(msg, reply_markup=TOP_KB);  return MENU
-        if s.id=="isi7":
-            total=sum(s.ans)
-            if   total<=7: lvl="أرق ضئيل"
-            elif total<=14: lvl="أرق خفيف"
-            elif total<=21: lvl="أرق متوسط"
-            else: lvl="أرق شديد"
-            await update.message.reply_text(f"**ISI-7:** {total}/28 — {lvl}", reply_markup=TOP_KB);  return MENU
-        if s.id=="pss10":
-            vals=s.ans[:]
-            for idx in s.reverse: vals[idx] = s.max_v - vals[idx]
-            total=sum(vals)
-            lvl = "منخفض" if total<=13 else "متوسط" if total<=26 else "عالٍ"
-            await update.message.reply_text(f"**PSS-10:** {total}/40 — ضغط {lvl}", reply_markup=TOP_KB);  return MENU
-        if s.id=="who5":
-            total=sum(s.ans)*4
-            note="منخفض (≤50) — يُستحسن تحسين الروتين والتواصل/التقييم." if total<=50 else "جيد."
-            await update.message.reply_text(f"**WHO-5:** {total}/100 — {note}", reply_markup=TOP_KB);  return MENU
-        if s.id=="k10":
-            total=sum(s.ans)
-            if   total<=19: lvl="خفيف"
-            elif total<=24: lvl="متوسط"
-            elif total<=29: lvl="شديد"
-            else: lvl="شديد جدًا"
-            await update.message.reply_text(f"**K10:** {total}/50 — ضيق {lvl}", reply_markup=TOP_KB);  return MENU
-
-        await update.message.reply_text("تم الحساب.", reply_markup=TOP_KB);  return MENU
-
-    context.user_data["s_i"] = i
-    await update.message.reply_text(survey_prompt(s, i));  return SURVEY
+    await update.message.reply_text("اختر الرقم من الأزرار بالأسفل.", reply_markup=scale_kb(s.min_v, s.max_v))
+    return SURVEY
 
 # ========== سقوط عام ==========
 async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -851,10 +923,22 @@ def main():
             ],
 
             TESTS_MENU:[MessageHandler(filters.TEXT & ~filters.COMMAND, tests_router)],
+
             PERS_MENU:[MessageHandler(filters.TEXT & ~filters.COMMAND, pers_router)],
-            PANIC_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow)],
-            PTSD_Q:[MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow)],
-            SURVEY:[MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow)],
+
+            PANIC_Q:[
+                MessageHandler(filters.TEXT & ~filters.COMMAND, panic_flow),
+                CallbackQueryHandler(bin_ans_cb, pattern=r"^panic:(yes|no)$"),
+            ],
+            PTSD_Q:[
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ptsd_flow),
+                CallbackQueryHandler(bin_ans_cb, pattern=r"^pc:(yes|no)$"),
+            ],
+            SURVEY:[
+                MessageHandler(filters.TEXT & ~filters.COMMAND, survey_flow),
+                CallbackQueryHandler(survey_ans_cb, pattern=r"^s:(\d+)$"),
+                CallbackQueryHandler(bin_ans_cb, pattern=r"^bin:(yes|no)$"),
+            ],
 
             AI_CHAT:[MessageHandler(filters.TEXT & ~filters.COMMAND, ai_chat_flow)],
         },
