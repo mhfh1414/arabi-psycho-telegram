@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>عربي سايكو | المساعد النفسي الذكي</title>
+  <meta name="description" content="اختبارات نفسية وإرشاد معرفي سلوكي مبسّط — مباشرة عبر تيليجرام.">
+  <style>
+    body{margin:0;background:#0b0f0d;color:#e8f2ef;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Naskh Arabic UI",Cairo,Tahoma,sans-serif;line-height:1.7}
+    .container{width:min(1100px,92%);margin:auto}
+    header{position:sticky;top:0;background:#0b0f0deb;border-bottom:1px solid #14201d}
+    nav{display:flex;align-items:center;justify-content:space-between;padding:.8rem 0}
+    .logo{display:flex;gap:.6rem;align-items:center;font-weight:900}
+    .logo-badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:radial-gradient(60% 60% at 70% 30%,#8ef6be,#22c55e);color:#05130b;font-weight:900}
+    .btn{display:inline-flex;gap:.6rem;align-items:center;justify-content:center;padding:.9rem 1.1rem;border-radius:999px;text-decoration:none;font-weight:800;border:1px solid #1b2a25;color:#05130b;background:linear-gradient(135deg,#16a34a,#22c55e)}
+    .btn:hover{filter:brightness(.95)}
+    .ghost{background:transparent;color:#e8f2ef;border-color:#2a3633}
+    .ghost:hover{background:#101816}
+    .hero{padding:60px 0 30px}
+    .headline{font-size:clamp(28px,5vw,46px);line-height:1.2;margin:0 0 .8rem;font-weight:900}
+    .sub{color:#b9c7c3}
+    .cards{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-top:1rem}
+    .card{background:#111717;border:1px solid #162320;border-radius:16px;padding:1rem}
+    footer{padding:30px 0;border-top:1px solid #15221f;color:#b9c7c3}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <nav>
+        <div class="logo">
+          <div class="logo-badge">ع</div>
+          <div>
+            عربي سايكو
+            <div style="font-size:.8rem;color:#b9c7c3;margin-top:-2px">المساعد النفسي الذكي</div>
+          </div>
+        </div>
+        <a class="btn" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ عبر تيليجرام</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="container">
+      <h1 class="headline">اختبارات نفسية فورية وإرشاد معرفي سلوكي مبسّط</h1>
+      <p class="sub">جرّب القلق والاكتئاب والرهاب الاجتماعي ونوبات الهلع، واحصل على توصيات قصيرة قابلة للتطبيق — مباشرة عبر تيليجرام.</p>
+      <div style="display:flex;gap:.7rem;flex-wrap:wrap;margin:1rem 0">
+        <a class="btn" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ الآن</a>
+        <a class="btn ghost" href="#tests">شاهد الاختبارات</a>
+      </div>
+
+      <div class="cards">
+        <div class="card"><b>اختبارات أساسية</b><div class="sub">GAD-7 ، PHQ-9 ، SPIN ، نوبات الهلع، ملامح الشخصية.</div></div>
+        <div class="card"><b>CBT مبسّط</b><div class="sub">خطوات سريعة تساعدك على التعامل مع الأفكار والمشاعر.</div></div>
+        <div class="card"><b>تجربة عربية سهلة</b><div class="sub">لغة واضحة وأزرار مريحة على الجوال.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tests">
+    <div class="container">
+      <h2>الاختبارات</h2>
+      <div class="cards">
+        <div class="card"><b>مقياس القلق (GAD-7)</b> <a class="btn ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="card"><b>مقياس الاكتئاب (PHQ-9)</b> <a class="btn ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="card"><b>الرهاب الاجتماعي (SPIN)</b> <a class="btn ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="card"><b>نوبات الهلع</b> <a class="btn ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+      </div>
+      <p class="sub" style="margin-top:.6rem">تنبيه: النتائج أولية وتوعوية وليست تشخيصًا طبيًا.</p>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container">© <span id="y"></span> عربي سايكو — جميع الحقوق محفوظة.</div>
+  </footer>
+
+  <script>document.getElementById('y').textContent=new Date().getFullYear();</script>
+</body>
+</html>
