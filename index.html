@@ -1,75 +1,40 @@
-<!DOCTYPE html><html lang="ar" dir="rtl">
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>عربي سايكو | المساعد النفسي الذكي</title>
-  <meta name="description" content="اختبارات نفسية فورية وإرشاد معرفي سلوكي مبسّط — مباشرة عبر تيليجرام." />
   <meta name="theme-color" content="#11a36b" />
   <style>
-    :root{
-      --bg:#f8faf9;         /* خلفية فاتحة مريحة */
-      --surface:#ffffff;     /* بطاقات ناصعة */
-      --text:#1a1e1c;        /* نص أساسي داكن */
-      --muted:#5f6b66;       /* نص ثانوي */
-      --line:#e6eeea;        /* حدود خفيفة */
-      --primary:#11a36b;     /* أخضر أنيق */
-      --primary-700:#0e8759; /* أخضر أدكن للتحويم */
-      --accent:#22c55e;      /* أخضر لامع للتدرج */
-      --radius:16px;         /* زوايا ناعمة */
-      --shadow:0 10px 30px rgba(0,0,0,.08);
-    }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{
-      margin:0; background:var(--bg); color:var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Naskh Arabic UI", Cairo, Tahoma, sans-serif;
-      line-height:1.75;
-    }
-    .container{width:min(1100px,92%);margin-inline:auto}/* Header */
-header{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.8);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.nav{display:flex;align-items:center;justify-content:space-between;padding:.9rem 0}
-.brand{display:flex;align-items:center;gap:.7rem}
-.logo{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-weight:900;color:#083b2a;background:radial-gradient(60% 60% at 70% 30%, #baf3d4, #7ee0af)}
-.brand h1{font-size:1.05rem;margin:0}
-.brand small{display:block;color:var(--muted);margin-top:-2px}
-.nav a{color:var(--text);text-decoration:none;font-weight:700;padding:.55rem .8rem;border-radius:10px}
-.nav a:hover{background:#f1f6f4}
-
-/* Buttons */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:.55rem;padding:.85rem 1.1rem;border-radius:999px;border:1px solid var(--line);font-weight:800;text-decoration:none;cursor:pointer;transition:.2s}
-.btn-primary{background:linear-gradient(135deg,var(--primary),#19b97b);color:#063323;}
-.btn-primary:hover{filter:brightness(.97); transform:translateY(-1px)}
-.btn-ghost{background:#ffffff;color:var(--text)}
-.btn-ghost:hover{background:#f3f8f6}
-
-/* Hero */
-.hero{padding:64px 0 20px}
-.headline{font-size:clamp(28px,4.6vw,44px);line-height:1.2;margin:0 0 .7rem;font-weight:900}
-.sub{color:var(--muted);margin:0 0 1rem}
-.hero-wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:1.4rem;align-items:center}
-.hero-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.1rem;box-shadow:var(--shadow)}
-
-/* Sections */
-section{padding:48px 0}
-.sec-title{font-size:clamp(20px,3vw,28px);margin:0 0 .8rem}
-.grid{display:grid;gap:1rem}
-.cards{grid-template-columns: repeat( auto-fit, minmax(240px, 1fr) );}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.1rem;box-shadow:var(--shadow)}
-.muted{color:var(--muted)}
-
-/* Tests */
-.tests{grid-template-columns: repeat( auto-fit, minmax(260px, 1fr) );}
-.test{display:flex;align-items:center;justify-content:space-between;gap:.8rem;background:#ffffff;border:1px solid var(--line);border-radius:14px;padding:.9rem 1rem}
-
-/* Footer */
-footer{padding:28px 0;border-top:1px solid var(--line);color:var(--muted)}
-
-@media (max-width: 900px){.hero-wrap{grid-template-columns:1fr}}
-
+    :root{--bg:#f8faf9;--surface:#fff;--text:#1a1e1c;--muted:#5f6b66;--line:#e6eeea;--primary:#11a36b;--radius:16px;--shadow:0 10px 30px rgba(0,0,0,.08)}
+    *{box-sizing:border-box}html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Naskh Arabic UI",Cairo,Tahoma,sans-serif;line-height:1.75}
+    .container{width:min(1100px,92%);margin-inline:auto}
+    header{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.8);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+    .nav{display:flex;align-items:center;justify-content:space-between;padding:.9rem 0}
+    .brand{display:flex;align-items:center;gap:.7rem}
+    .logo{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-weight:900;color:#083b2a;background:radial-gradient(60% 60% at 70% 30%, #baf3d4, #7ee0af)}
+    .brand h1{font-size:1.05rem;margin:0} .brand small{display:block;color:var(--muted);margin-top:-2px}
+    nav a{color:var(--text);text-decoration:none;font-weight:700;padding:.55rem .8rem;border-radius:10px}
+    nav a:hover{background:#f1f6f4}
+    .btn{display:inline-flex;align-items:center;gap:.55rem;padding:.85rem 1.1rem;border-radius:999px;border:1px solid var(--line);font-weight:800;text-decoration:none}
+    .btn-primary{background:linear-gradient(135deg,#11a36b,#19b97b);color:#063323}
+    .btn-ghost{background:#ffffff}
+    .btn-ghost:hover{background:#f3f8f6}
+    .hero{padding:64px 0 20px}
+    .headline{font-size:clamp(28px,4.6vw,44px);line-height:1.2;margin:0 0 .7rem;font-weight:900}
+    .sub{color:var(--muted);margin:0 0 1rem}
+    .hero-wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:1.4rem;align-items:center}
+    .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:1.1rem;box-shadow:var(--shadow)}
+    section{padding:48px 0}
+    .grid{display:grid;gap:1rem}
+    .cards{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+    .test{display:flex;align-items:center;justify-content:space-between;gap:.8rem;background:#ffffff;border:1px solid var(--line);border-radius:14px;padding:.9rem 1rem}
+    footer{padding:28px 0;border-top:1px solid var(--line);color:var(--muted)}
+    @media(max-width:900px){.hero-wrap{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-  <!-- Header -->
   <header>
     <div class="container nav">
       <div class="brand">
@@ -79,15 +44,20 @@ footer{padding:28px 0;border-top:1px solid var(--line);color:var(--muted)}
           <small>المساعد النفسي الذكي</small>
         </div>
       </div>
-      <nav style="display:flex;gap:.25rem;flex-wrap:wrap">
-        <a href="#features">الخدمات</a>
-        <a href="#tests">الاختبارات</a>
-        <a href="#faq">الأسئلة الشائعة</a>
-        <a href="#contact">تواصل</a>
+      <nav style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <a href="index.html">الرئيسية</a>
+        <a href="dsm.html">DSM-5</a>
+        <a href="personality.html">اضطرابات الشخصية</a>
+        <a href="cbt.html">CBT</a>
+        <a href="tests.html">اختبارات نفسية</a>
+        <a href="traits.html">اختبارات شخصية</a>
+        <a href="addiction.html">الإدمان</a>
         <a class="btn btn-primary" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ عبر تيليجرام</a>
       </nav>
     </div>
-  </header>  <!-- Hero -->  <section class="hero">
+  </header>
+
+  <section class="hero">
     <div class="container hero-wrap">
       <div>
         <h2 class="headline">واجهة فاتحة مرتبة • اختبارات فورية وتوصيات واضحة</h2>
@@ -96,70 +66,49 @@ footer{padding:28px 0;border-top:1px solid var(--line);color:var(--muted)}
           <a class="btn btn-primary" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ الآن عبر تيليجرام</a>
           <a class="btn btn-ghost" href="https://wa.me/966530565696" target="_blank" rel="noopener">أرسل لنا على واتساب</a>
         </div>
-        <div class="muted" style="font-size:.95rem">يقوده <b>أخصائي نفسي</b> — خصوصية وبساطة في كل خطوة.</div>
+        <div style="color:#5f6b66;font-size:.95rem">يقوده <b>أخصائي نفسي</b> — خصوصية وبساطة في كل خطوة.</div>
       </div>
-      <aside class="hero-card">
+      <aside class="card">
         <div style="font-weight:800;margin-bottom:.4rem">ابدأ خلال أقل من دقيقة</div>
-        <ol style="margin:0;padding:0 1.1rem;color:var(--muted)">
+        <ol style="margin:0;padding:0 1.1rem;color:#5f6b66">
           <li>اضغط زر البدء ثم Start.</li>
           <li>اختر الاختبار أو الإرشاد.</li>
           <li>استلم نتيجتك وتوصيات قابلة للتطبيق.</li>
         </ol>
       </aside>
     </div>
-  </section>  <!-- Features -->  <section id="features">
+  </section>
+
+  <section>
     <div class="container">
-      <h3 class="sec-title">ماذا يقدّم <span style="color:var(--primary)">عربي سايكو</span>؟</h3>
+      <h3 style="margin:0 0 .8rem;font-size:clamp(20px,3vw,28px)">خدمات <span style="color:#11a36b">عربي سايكو</span></h3>
       <div class="grid cards">
-        <div class="card"><b>اختبارات نفسية فورية</b><div class="muted">GAD‑7، PHQ‑9، SPIN، نوبات الهلع، وملامح الشخصية.</div></div>
-        <div class="card"><b>إرشاد معرفي سلوكي (CBT)</b><div class="muted">خطوات عملية مبسّطة للتعامل مع الأفكار والمشاعر.</div></div>
-        <div class="card"><b>بساطة وتجربة عربية</b><div class="muted">لغة واضحة وأزرار مريحة على الجوال.</div></div>
-        <div class="card"><b>خصوصية واحترام</b><div class="muted">لا نطلب معلومات حساسة ويمكن حذف المحادثة.</div></div>
+        <div class="card"><b>اختبارات نفسية فورية</b><div style="color:#5f6b66">GAD-7، PHQ-9، SPIN، نوبات الهلع، وملامح الشخصية.</div></div>
+        <div class="card"><b>إرشاد معرفي سلوكي (CBT)</b><div style="color:#5f6b66">خطوات عملية مبسّطة للتعامل مع الأفكار والمشاعر.</div></div>
+        <div class="card"><b>خصوصية وبساطة</b><div style="color:#5f6b66">لا نطلب معلومات حساسة ويمكن حذف المحادثة.</div></div>
       </div>
     </div>
-  </section>  <!-- Tests -->  <section id="tests">
+  </section>
+
+  <section id="tests">
     <div class="container">
-      <h3 class="sec-title">الاختبارات</h3>
-      <div class="grid tests">
-        <div class="test"><b>مقياس القلق (GAD‑7)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ</a></div>
-        <div class="test"><b>مقياس الاكتئاب (PHQ‑9)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ</a></div>
-        <div class="test"><b>الرهاب الاجتماعي (SPIN)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ</a></div>
-        <div class="test"><b>نوبات الهلع</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ</a></div>
-        <div class="test"><b>ملامح اضطرابات الشخصية</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">ابدأ</a></div>
+      <h3 style="margin:0 0 .8rem">أشهر الاختبارات</h3>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+        <div class="test"><b>GAD-7 (القلق)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="test"><b>PHQ-9 (الاكتئاب)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="test"><b>SPIN (الرهاب الاجتماعي)</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
+        <div class="test"><b>نوبات الهلع</b><a class="btn btn-ghost" href="https://t.me/Mhfh1414" target="_blank">ابدأ</a></div>
       </div>
-      <p class="muted" style="margin-top:.6rem">تنبيه: النتائج أولية وتوعوية وليست تشخيصًا طبيًا.</p>
+      <p style="color:#5f6b66;margin-top:.6rem">تنبيه: النتائج توعوية وليست تشخيصًا طبيًا.</p>
     </div>
-  </section>  <!-- FAQ & Contact -->  <section id="faq">
-    <div class="container">
-      <h3 class="sec-title">الأسئلة الشائعة</h3>
-      <div class="grid cards">
-        <div class="card"><b>هل النتائج تشخيص طبي؟</b><div class="muted">لا، مؤشرات أولية للتوعية وليست بديلاً للتقييم الإكلينيكي.</div></div>
-        <div class="card"><b>هل يتم حفظ بياناتي؟</b><div class="muted">نكتفي بالحد الأدنى ولا نطلب معلومات حساسة. بإمكانك حذف محادثتك.</div></div>
-        <div class="card"><b>كيف أتواصل مع الأخصائي؟</b><div class="muted">عبر تيليجرام أو واتساب من الأزرار المتاحة.</div></div>
-      </div>
-    </div>
-  </section>  <section id="contact">
-    <div class="container">
-      <h3 class="sec-title">تواصل</h3>
-      <div class="grid cards">
-        <div class="card">
-          <b>رسالة سريعة</b>
-          <p class="muted">للأسئلة العامة أو التعاون.</p>
-          <div style="display:flex;gap:.6rem;flex-wrap:wrap">
-            <a class="btn btn-primary" href="https://t.me/Mhfh1414" target="_blank" rel="noopener">تيليجرام</a>
-            <a class="btn btn-ghost" href="https://wa.me/966530565696" target="_blank" rel="noopener">واتساب</a>
-          </div>
-        </div>
-        <div class="card">
-          <b>إخلاء مسؤولية</b>
-          <p class="muted">الخدمة توعوية ولا تناسب الطوارئ. في حال خطر فوري اتصل بخدمات الطوارئ أو أقرب مقدم رعاية.</p>
-        </div>
-      </div>
-    </div>
-  </section>  <footer>
+  </section>
+
+  <footer>
     <div class="container" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
       <div>© <span id="y"></span> عربي سايكو — جميع الحقوق محفوظة.</div>
-      <div><a href="#" style="color:var(--muted)">سياسة الخصوصية (قريبًا)</a></div>
+      <div style="color:#5f6b66">قريبًا: سياسة الخصوصية</div>
     </div>
-  </footer>  <script>document.getElementById('y').textContent=new Date().getFullYear();</script></body>
+  </footer>
+  <script>document.getElementById('y').textContent=new Date().getFullYear();</script>
+</body>
 </html>
